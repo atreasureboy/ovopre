@@ -1,0 +1,24 @@
+{
+  "name": "ovopre",
+  "version": "0.1.0",
+  "description": "OpenAI-compatible coding CLI scaffold",
+  "type": "module",
+  "main": "src/cli.js",
+  "bin": {
+    "ovopre": "./bin/ovopre.js"
+  },
+  "scripts": {
+    "start": "node bin/ovopre.js",
+    "chat": "node bin/ovopre.js chat"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "cli",
+    "openai-compatible",
+    "assistant",
+    "coding"
+  ],
+  "license": "MIT"
+}
