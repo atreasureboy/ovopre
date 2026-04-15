@@ -29,8 +29,8 @@ const HELP_TEXT = `ovopre - OpenAI-compatible coding CLI (scaffold)
 
 Usage:
   ovopre
-  ovopre "your prompt" [--model <model>] [--temperature <0-2>] [--timeout-ms <n>] [--max-retries <n>] [--no-tools] [--no-stream]
-  ovopre chat [--model <model>] [--temperature <0-2>] [--session <id>] [--no-history] [--timeout-ms <n>] [--max-retries <n>] [--no-tools] [--no-stream]
+  ovopre "your prompt" [--model <model>] [--temperature <0-2>] [--timeout-ms <n>] [--max-retries <n>] [--no-tools] [--no-stream] [--verbose-ui]
+  ovopre chat [--model <model>] [--temperature <0-2>] [--session <id>] [--no-history] [--timeout-ms <n>] [--max-retries <n>] [--no-tools] [--no-stream] [--verbose-ui] [--plan-preview]
   ovopre task "goal" [--model <model>] [--temperature <0-2>] [--max-tool-rounds <n>] [--max-task-retries <n>] [--verify-rounds <n>] [--auto-rollback-on-fail] [--timeout-ms <n>] [--max-retries <n>] [--no-tools]
   ovopre config show
   ovopre config init --api-key <key> [--base-url <url>] [--model <model>] [--temperature <0-2>] [--timeout-ms <n>] [--max-retries <n>]
@@ -260,13 +260,18 @@ export async function runCli(argv) {
     noHistory: hasFlag(flags, '--no-history'),
     enableTools: hasFlag(flags, '--no-tools') ? false : true,
     stream: hasFlag(flags, '--no-stream') ? false : true,
+    verboseUi: hasFlag(flags, '--verbose-ui'),
+    planPreview: hasFlag(flags, '--plan-preview'),
     cwd: getFlagValue(flags, '--cwd') || process.cwd(),
     maxToolRounds: normalizePositiveInt(getFlagValue(flags, '--max-tool-rounds'), 20),
     output: getFlagValue(flags, '--output') || undefined
   };
 
   if (cmd === 'chat') {
-    await runInteractiveChat(commonOptions);
+    const result = await runInteractiveChat(commonOptions);
+    if (result?.exitRequested) {
+      process.exit(0);
+    }
     return;
   }
 
@@ -286,7 +291,10 @@ export async function runCli(argv) {
   }
 
   if (!cmd) {
-    await runInteractiveChat(commonOptions);
+    const result = await runInteractiveChat(commonOptions);
+    if (result?.exitRequested) {
+      process.exit(0);
+    }
     return;
   }
 

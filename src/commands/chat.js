@@ -8,6 +8,7 @@ import { extractAndSaveMemory, loadMemoriesForPrompt } from '../services/memoryE
 import { createFormatter } from '../outputStyles/index.js';
 import { runTaskStateMachine } from '../core/taskRunner.js';
 import { buildSkillsSystemAddendum } from '../skills/loader.js';
+import { resetMcpRuntime } from '../mcp/runtime.js';
 import { runModelsCommand } from './models.js';
 import { runStatusCommand } from './status.js';
 import { runCostCommand } from './cost.js';
@@ -22,24 +23,32 @@ import {
   formatStatusBar,
   formatSuccess,
   formatToolEnd,
+  formatToolLine,
   formatToolStart,
   formatWarn,
   promptUser,
-  renderBanner
+  renderBanner,
 } from '../ui/terminal.js';
 
 export async function runOneShot(prompt, options = {}) {
   const config = await loadRuntimeConfig(options.cwd);
   const enableTools = options.enableTools !== false;
+  const verboseUi = Boolean(options.verboseUi);
   const fmt = createFormatter(options.output);
   const messages = await buildBaseMessages(options.systemPrompt, options.mode || 'chat', options.cwd);
   messages.push({ role: 'user', content: prompt });
+  const uiState = { usage: null, toolCalls: 0, round: null };
+  const model = options.model || config.model;
+  const toolArgMap = new Map();
 
   let streamStarted = false;
   const handleToken = fmt.isJson || fmt.isPlain
-    ? undefined  // non-terminal: buffer and emit via fmt.result
+    ? undefined
     : (token) => {
-        if (!streamStarted) streamStarted = true;
+        if (!streamStarted) {
+          process.stdout.write('\n');
+          streamStarted = true;
+        }
         process.stdout.write(token);
       };
 
@@ -54,12 +63,44 @@ export async function runOneShot(prompt, options = {}) {
     stream: options.stream !== false,
     cwd: options.cwd,
     maxToolRounds: options.maxToolRounds,
-    onToken: handleToken
+    onToken: handleToken,
+    onRoundStart: fmt.isTerminal && verboseUi
+      ? (round) => {
+          uiState.round = round;
+          if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
+          console.log(formatStatusBar({ phase: 'reason', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round }));
+        }
+      : (round) => { uiState.round = round; },
+    onUsage: ({ delta, aggregate, round }) => {
+      uiState.usage = addUsage(uiState.usage, delta || aggregate);
+      uiState.round = round || uiState.round;
+      if (fmt.isTerminal && verboseUi && !streamStarted) {
+        console.log(formatStatusBar({ phase: 'llm', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round: uiState.round }));
+      }
+    },
+    onToolCallStart: fmt.isTerminal
+      ? ({ index, name, call }) => {
+          if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
+          uiState.toolCalls = index;
+          let parsedArgs = {};
+          try { parsedArgs = JSON.parse(call?.function?.arguments || '{}'); } catch {}
+          toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
+          if (verboseUi) console.log(formatToolStart(name, index));
+        }
+      : undefined,
+    onToolCallEnd: fmt.isTerminal
+      ? ({ name, ok, durationMs, output, index }) => {
+          if (verboseUi) {
+            console.log(formatToolEnd(name, ok, durationMs, { output }));
+          } else {
+            console.log(formatToolLine(name, ok, durationMs, toolArgMap.get(index) || ''));
+          }
+        }
+      : undefined
   });
 
-  if (streamStarted) {
-    process.stdout.write('\n');
-  } else {
+  if (streamStarted) process.stdout.write('\n');
+  if (!streamStarted) {
     fmt.result((result.text || '').trim(), result.usage);
   }
 }
@@ -70,7 +111,7 @@ export async function runTask(goal, options = {}) {
   const state = { usage: null, toolCalls: 0, round: null };
   const model = options.model || config.model;
   if (!fmt.isJson) {
-    console.log(formatStatusBar({ phase: 'task:plan', model, usage: state.usage, toolCalls: state.toolCalls, round: state.round }));
+    console.log(formatStatusBar({ phase: 'task:start', model, usage: null, toolCalls: 0 }));
   }
   const result = await runTaskStateMachine({
     goal,
@@ -81,41 +122,31 @@ export async function runTask(goal, options = {}) {
       enableTools: options.enableTools !== false,
       quiet: true,
       onStage: ({ stage }) => {
-        console.log(
-          formatStatusBar({ phase: `task:${stage}`, model, usage: state.usage, toolCalls: state.toolCalls, round: state.round })
-        );
+        if (!fmt.isJson) {
+          console.log(formatStatusBar({ phase: `task:${stage}`, model, usage: state.usage, toolCalls: state.toolCalls, round: state.round }));
+        }
       },
       onRoundStart: (round) => {
         state.round = round;
-        console.log(
-          formatStatusBar({
-            phase: 'task:execute',
-            model,
-            usage: state.usage,
-            toolCalls: state.toolCalls,
-            round: state.round
-          })
-        );
+        // silent — stage change already signals phase transitions
       },
       onUsage: ({ delta, aggregate, round }) => {
         state.usage = addUsage(state.usage, delta || aggregate);
         state.round = round || state.round;
-        console.log(
-          formatStatusBar({
-            phase: 'task:llm',
-            model,
-            usage: state.usage,
-            toolCalls: state.toolCalls,
-            round: state.round
-          })
-        );
+        // silent — token counts accumulate for final summary only
       },
-      onToolCallStart: ({ index, name }) => {
+      onToolCallStart: ({ index, name, call }) => {
         state.toolCalls = index;
-        console.log(formatToolStart(name, index));
+        let parsedArgs = {};
+        try { parsedArgs = JSON.parse(call?.function?.arguments || '{}'); } catch {}
+        state.toolArgMap = state.toolArgMap || new Map();
+        state.toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
       },
-      onToolCallEnd: ({ name, ok, durationMs }) => {
-        console.log(formatToolEnd(name, ok, durationMs));
+      onToolCallEnd: ({ name, ok, durationMs, index }) => {
+        console.log(formatToolLine(name, ok, durationMs, (state.toolArgMap && state.toolArgMap.get(index)) || ''));
+      },
+      onProgress: (event) => {
+        printTaskProgress(event);
       }
     }
   });
@@ -125,6 +156,8 @@ export async function runTask(goal, options = {}) {
 export async function runInteractiveChat(options = {}) {
   const config = await loadRuntimeConfig(options.cwd);
   const enableTools = options.enableTools !== false;
+  const verboseUi = Boolean(options.verboseUi);
+  const planPreview = Boolean(options.planPreview);
   const sessionId = options.sessionId || 'default';
   const history = options.noHistory ? [] : await loadSession(sessionId);
   const baseMessages = await buildBaseMessages(options.systemPrompt, 'chat', options.cwd);
@@ -138,12 +171,13 @@ export async function runInteractiveChat(options = {}) {
     })
   );
   console.log(formatInfo(`session=${sessionId} tools=${enableTools ? 'on' : 'off'} baseURL=${config.baseURL}`));
+  let exitRequested = false;
 
   try {
     while (true) {
       let line = '';
       try {
-        line = (await rl.question(promptUser())).trim();
+        line = normalizeChatInput(await rl.question(promptUser()));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.toLowerCase().includes('readline was closed')) {
@@ -154,16 +188,18 @@ export async function runInteractiveChat(options = {}) {
       if (!line) {
         continue;
       }
-      if (line === '/exit' || line === '/quit') {
+      const slash = parseSlashCommand(line);
+      if (slash?.name === 'exit' || slash?.name === 'quit') {
+        exitRequested = true;
         break;
       }
-      if (line === '/clear') {
+      if (slash?.name === 'clear') {
         messages.length = 0;
         messages.push(...(await buildBaseMessages(options.systemPrompt, 'chat', options.cwd)));
         console.log(formatSuccess('history cleared.'));
         continue;
       }
-      if (line === '/help') {
+      if (slash?.name === 'help') {
         console.log(
           formatInfo(
             'commands: /help /clear /plan <goal> /status /usage [days] /session ... /plugins ... /skills ... /mcp ... /models ... /task <goal> /tasks ... /exit'
@@ -171,42 +207,42 @@ export async function runInteractiveChat(options = {}) {
         );
         continue;
       }
-      if (line === '/status') {
+      if (slash?.name === 'status') {
         await runStatusCommand();
         continue;
       }
-      if (line.startsWith('/usage')) {
-        const arg = line.replace(/^\/usage\s*/, '').trim();
+      if (slash?.name === 'usage') {
+        const arg = slash.argsText;
         await runCostCommand(arg ? [arg] : []);
         continue;
       }
-      if (line.startsWith('/session')) {
-        const sub = line.replace(/^\/session\s*/, '').trim();
+      if (slash?.name === 'session') {
+        const sub = slash.argsText;
         await runSessionCommand(sub ? sub.split(/\s+/) : []);
         continue;
       }
-      if (line.startsWith('/plugins')) {
-        const sub = line.replace(/^\/plugins\s*/, '').trim();
+      if (slash?.name === 'plugins') {
+        const sub = slash.argsText;
         await runPluginsCommand(sub ? sub.split(/\s+/) : []);
         continue;
       }
-      if (line.startsWith('/skills')) {
-        const sub = line.replace(/^\/skills\s*/, '').trim();
+      if (slash?.name === 'skills') {
+        const sub = slash.argsText;
         await runSkillsCommand(sub ? sub.split(/\s+/) : []);
         continue;
       }
-      if (line.startsWith('/mcp')) {
-        const sub = line.replace(/^\/mcp\s*/, '').trim();
+      if (slash?.name === 'mcp') {
+        const sub = slash.argsText;
         await runMcpCommand(sub ? sub.split(/\s+/) : []);
         continue;
       }
-      if (line.startsWith('/tasks')) {
-        const sub = line.replace(/^\/tasks\s*/, '').trim();
+      if (slash?.name === 'tasks') {
+        const sub = slash.argsText;
         await runTasksCommand(sub ? sub.split(/\s+/) : []);
         continue;
       }
-      if (line === '/models' || line.startsWith('/models ')) {
-        const sub = line.replace(/^\/models\s*/, '').trim();
+      if (slash?.name === 'models') {
+        const sub = slash.argsText;
         const args = sub ? sub.split(/\s+/) : [];
         try {
           await runModelsCommand(args);
@@ -216,8 +252,8 @@ export async function runInteractiveChat(options = {}) {
         }
         continue;
       }
-      if (line.startsWith('/plan ')) {
-        const goal = line.slice('/plan '.length).trim();
+      if (slash?.name === 'plan') {
+        const goal = slash.argsText;
         if (!goal) {
           console.log(formatWarn('usage: /plan <goal>'));
           continue;
@@ -231,14 +267,14 @@ export async function runInteractiveChat(options = {}) {
         }
         continue;
       }
-      if (line.startsWith('/task ')) {
-        const goal = line.slice('/task '.length).trim();
+      if (slash?.name === 'task') {
+        const goal = slash.argsText;
         if (!goal) {
           console.log(formatWarn('usage: /task <goal>'));
           continue;
         }
         const state = { usage: null, toolCalls: 0, round: null };
-        const model = options.model || config.model;
+        const taskModel = options.model || config.model;
         try {
           const taskResult = await runTaskStateMachine({
             goal,
@@ -249,47 +285,27 @@ export async function runInteractiveChat(options = {}) {
               enableTools,
               quiet: true,
               onStage: ({ stage }) => {
-                console.log(
-                  formatStatusBar({
-                    phase: `task:${stage}`,
-                    model,
-                    usage: state.usage,
-                    toolCalls: state.toolCalls,
-                    round: state.round
-                  })
-                );
+                console.log(formatStatusBar({ phase: `task:${stage}`, model: taskModel, usage: state.usage, toolCalls: state.toolCalls, round: state.round }));
               },
               onRoundStart: (round) => {
                 state.round = round;
-                console.log(
-                  formatStatusBar({
-                    phase: 'task:execute',
-                    model,
-                    usage: state.usage,
-                    toolCalls: state.toolCalls,
-                    round: state.round
-                  })
-                );
               },
               onUsage: ({ delta, aggregate, round }) => {
                 state.usage = addUsage(state.usage, delta || aggregate);
                 state.round = round || state.round;
-                console.log(
-                  formatStatusBar({
-                    phase: 'task:llm',
-                    model,
-                    usage: state.usage,
-                    toolCalls: state.toolCalls,
-                    round: state.round
-                  })
-                );
               },
-              onToolCallStart: ({ index, name }) => {
+              onToolCallStart: ({ index, name, call }) => {
                 state.toolCalls = index;
-                console.log(formatToolStart(name, index));
+                let parsedArgs = {};
+                try { parsedArgs = JSON.parse(call?.function?.arguments || '{}'); } catch {}
+                state.toolArgMap = state.toolArgMap || new Map();
+                state.toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
               },
-              onToolCallEnd: ({ name, ok, durationMs }) => {
-                console.log(formatToolEnd(name, ok, durationMs));
+              onToolCallEnd: ({ name, ok, durationMs, index }) => {
+                console.log(formatToolLine(name, ok, durationMs, (state.toolArgMap && state.toolArgMap.get(index)) || ''));
+              },
+              onProgress: (event) => {
+                printTaskProgress(event);
               }
             }
           });
@@ -301,18 +317,34 @@ export async function runInteractiveChat(options = {}) {
         continue;
       }
 
+      if (enableTools && planPreview) {
+        try {
+          const planned = await runQuickPlan(line, { ...options, temperature: 0 });
+          const planText = String(planned || '').trim();
+          if (planText) {
+            console.log(formatInfo('[plan]'));
+            console.log(planText);
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.log(formatWarn(`plan preview failed: ${message}`));
+        }
+      }
+
       messages.push({ role: 'user', content: line });
       const uiState = { usage: null, toolCalls: 0, round: null };
       const model = options.model || config.model;
-      console.log(formatStatusBar({ phase: 'thinking', model, usage: uiState.usage, toolCalls: uiState.toolCalls }));
+      if (verboseUi) {
+        console.log(formatStatusBar({ phase: 'thinking', model, usage: uiState.usage, toolCalls: uiState.toolCalls }));
+      }
 
       try {
-        // When tools are enabled we now stream every round, so we write
-        // the assistant prefix once on the first token and then stream directly.
         let streamStarted = false;
+        const toolArgMap = new Map();
+
         const handleToken = (token) => {
           if (!streamStarted) {
-            process.stdout.write(formatAssistant(''));
+            process.stdout.write('\n');
             streamStarted = true;
           }
           process.stdout.write(token);
@@ -329,73 +361,51 @@ export async function runInteractiveChat(options = {}) {
           stream: options.stream !== false,
           cwd: options.cwd,
           maxToolRounds: options.maxToolRounds,
+          onToken: handleToken,
           onRoundStart: (round) => {
             uiState.round = round;
-            // If text was streaming before a tool call, close that line first
-            if (streamStarted) {
-              process.stdout.write('\n');
-              streamStarted = false;
+            if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
+            if (verboseUi) {
+              console.log(formatStatusBar({ phase: 'reason', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round }));
             }
-            console.log(
-              formatStatusBar({
-                phase: 'reason',
-                model,
-                usage: uiState.usage,
-                toolCalls: uiState.toolCalls,
-                round: uiState.round
-              })
-            );
           },
           onUsage: ({ delta, aggregate, round }) => {
             uiState.usage = addUsage(uiState.usage, delta || aggregate);
             uiState.round = round || uiState.round;
-            console.log(
-              formatStatusBar({
-                phase: 'llm',
-                model,
-                usage: uiState.usage,
-                toolCalls: uiState.toolCalls,
-                round: uiState.round
-              })
-            );
-          },
-          onToolCallStart: ({ index, name }) => {
-            if (streamStarted) {
-              process.stdout.write('\n');
-              streamStarted = false;
+            if (verboseUi && !streamStarted) {
+              console.log(formatStatusBar({ phase: 'llm', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round: uiState.round }));
             }
+          },
+          onToolCallStart: ({ index, name, call }) => {
+            if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
             uiState.toolCalls = index;
-            console.log(formatToolStart(name, index));
-            console.log(
-              formatStatusBar({
-                phase: 'tools',
-                model,
-                usage: uiState.usage,
-                toolCalls: uiState.toolCalls,
-                round: uiState.round
-              })
-            );
+            let parsedArgs = {};
+            try { parsedArgs = JSON.parse(call?.function?.arguments || '{}'); } catch {}
+            toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
+            if (verboseUi) {
+              console.log(formatToolStart(name, index));
+            }
           },
-          onToolCallEnd: ({ name, ok, durationMs }) => {
-            console.log(formatToolEnd(name, ok, durationMs));
+          onToolCallEnd: ({ name, ok, durationMs, output, index }) => {
+            if (verboseUi) {
+              console.log(formatToolEnd(name, ok, durationMs, { output }));
+            } else {
+              console.log(formatToolLine(name, ok, durationMs, toolArgMap.get(index) || ''));
+            }
           },
-          onToken: handleToken,
           onCompact: ({ round, summary }) => {
-            console.log(
-              formatInfo(
-                `[compact] context compressed before round ${round} (${summary ? summary.length : 0} chars summary)`
-              )
-            );
+            console.log(formatInfo(`[compact] context compressed before round ${round} (${summary ? summary.length : 0} chars summary)`));
           }
         });
 
         // Close any in-progress streaming line
+        const hadStreamOutput = streamStarted;
         if (streamStarted) {
           process.stdout.write('\n');
           streamStarted = false;
-        } else if (!enableTools) {
-          // Non-tools path with no streaming: print the full answer
-          process.stdout.write('\n');
+        }
+        // Non-streaming, no-tools path: print the buffered response
+        if (!hadStreamOutput && result.text) {
           console.log(formatAssistant((result.text || '').trim()));
         }
 
@@ -422,11 +432,13 @@ export async function runInteractiveChat(options = {}) {
           if (compactResult.compacted) {
             messages.length = 0;
             messages.push(...compactResult.messages);
-            console.log(
-              formatInfo(
-                `[compact] session history compressed (was ~${lastPromptTokens} tokens)`
-              )
-            );
+            if (verboseUi) {
+              console.log(
+                formatInfo(
+                  `[compact] session history compressed (was ~${lastPromptTokens} tokens)`
+                )
+              );
+            }
           }
         }
 
@@ -441,6 +453,8 @@ export async function runInteractiveChat(options = {}) {
     }
   } finally {
     rl.close();
+    input.pause();
+    await resetMcpRuntime().catch(() => {});
     // Extract memories from this session (fire-and-forget — never blocks exit)
     const persist = messages.filter((m) => m.role !== 'system');
     if (persist.length >= 4) {
@@ -450,6 +464,8 @@ export async function runInteractiveChat(options = {}) {
       }).catch(() => {});
     }
   }
+
+  return { exitRequested };
 }
 
 async function buildBaseMessages(systemPrompt, mode = 'chat', cwd = process.cwd()) {
@@ -461,7 +477,15 @@ async function buildBaseMessages(systemPrompt, mode = 'chat', cwd = process.cwd(
           'You can call tools to inspect files, edit files, and run shell commands.',
           'Work directly and efficiently. Do not ask for permission before tool usage.'
         ].join(' ')
-      : 'You are ovopre, a pragmatic coding CLI assistant. Give direct, useful, implementation-focused answers.';
+      : [
+          'You are ovopre, a pragmatic coding CLI assistant.',
+          'In interactive chat mode, behave like a polished terminal coding agent.',
+          'Do the work silently when tools are needed, then report the outcome plainly.',
+          'Do not expose internal planning, hidden reasoning, tool names, task stages, verification checklists, or step-by-step execution unless the user explicitly asks for them.',
+          'Do not say you are planning, thinking, or about to use tools.',
+          'Do not be chatty, sarcastic, or mention that the user asked something before unless they explicitly ask about history.',
+          'If blocked, state the blocker directly and give the shortest useful next action.'
+        ].join(' ');
   const prompt = systemPrompt || defaultPrompt;
 
   const [skillsAddendum, memoriesAddendum] = await Promise.all([
@@ -519,5 +543,102 @@ function addUsage(current, extra) {
     prompt_tokens: Number(base.prompt_tokens || 0) + Number(extra.prompt_tokens || 0),
     completion_tokens: Number(base.completion_tokens || 0) + Number(extra.completion_tokens || 0),
     total_tokens: Number(base.total_tokens || 0) + Number(extra.total_tokens || 0)
+  };
+}
+
+/**
+ * Extract the most meaningful argument from a tool call to show in the UI.
+ * Returns a short string like "README.md" or "npm test" to display as
+ *   ⏺ read_file(README.md)  3ms
+ */
+function extractPrimaryArg(name, args) {
+  if (!args || typeof args !== 'object') return '';
+  // Common argument name patterns ordered by priority
+  const candidates = [
+    args.path, args.file_path, args.filename, args.file,
+    args.command, args.cmd,
+    args.query, args.pattern,
+    args.url,
+    args.content && args.path ? args.path : null,  // write_file: show path not content
+  ];
+  for (const v of candidates) {
+    if (v && typeof v === 'string') {
+      // shorten to last path segment if it looks like a path
+      const short = v.includes('/') ? v.split('/').filter(Boolean).pop() || v : v;
+      return short.length > 40 ? short.slice(0, 39) + '…' : short;
+    }
+  }
+  // fallback: first string value in args
+  for (const v of Object.values(args)) {
+    if (typeof v === 'string' && v.length > 0) {
+      return v.length > 40 ? v.slice(0, 39) + '…' : v;
+    }
+  }
+  return '';
+}
+
+function printTaskProgress(event) {
+  if (!event || !event.type) {
+    return;
+  }
+
+  if (event.type === 'plan') {
+    const text = String(event.text || '').trim();
+    if (!text) {
+      return;
+    }
+    console.log(formatInfo('[plan]'));
+    console.log(text);
+    return;
+  }
+
+  if (event.type === 'attempt_start') {
+    console.log(formatInfo(`[progress] attempt ${event.attempt}/${event.totalAttempts}`));
+    return;
+  }
+
+  if (event.type === 'verify') {
+    if (event.passed) {
+      console.log(formatSuccess(`[verify] passed in round ${event.rounds}`));
+      return;
+    }
+    const failed = Array.isArray(event.failedCommands) ? event.failedCommands.filter(Boolean) : [];
+    const suffix = failed.length ? ` failed: ${failed.join(' | ')}` : '';
+    console.log(formatWarn(`[verify] failed (${event.failureCategory || 'unknown'})${suffix}`));
+    return;
+  }
+
+  if (event.type === 'retry') {
+    const detail = String(event.failureDetail || '').split('\n')[0].slice(0, 140);
+    const more = detail ? `, reason: ${detail}` : '';
+    console.log(
+      formatWarn(
+        `[retry] ${event.attempt}/${event.totalAttempts}, next ${event.nextAttempt}/${event.totalAttempts}${more}`
+      )
+    );
+  }
+}
+
+function normalizeChatInput(value) {
+  return String(value || '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseSlashCommand(line) {
+  const normalized = normalizeChatInput(line);
+  if (!normalized.startsWith('/')) {
+    return null;
+  }
+
+  const match = /^\/([^\s]+)(?:\s+(.*))?$/u.exec(normalized);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    name: String(match[1] || '').toLowerCase(),
+    argsText: String(match[2] || '').trim()
   };
 }

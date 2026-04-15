@@ -32,6 +32,10 @@ export async function runTaskStateMachine({ goal, config, options = {} }) {
   const planStart = Date.now();
   const planResult = await runPlanningStage({ goal, config, options, skillsAddendum });
   stageContext.plan = planResult.text;
+  emitProgress(options, {
+    type: 'plan',
+    text: stageContext.plan
+  });
   await trace.event('stage_complete', {
     stage: 'plan',
     durationMs: Date.now() - planStart,
@@ -41,6 +45,12 @@ export async function runTaskStateMachine({ goal, config, options = {} }) {
 
   let lastFailure = '';
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    emitProgress(options, {
+      type: 'attempt_start',
+      attempt,
+      totalAttempts: maxAttempts,
+      hasPreviousFailure: Boolean(lastFailure)
+    });
     emitStage(options, { stage: 'execute', attempt, totalAttempts: maxAttempts });
     const executeStart = Date.now();
     const executionResult = await runExecuteStage({
@@ -53,6 +63,12 @@ export async function runTaskStateMachine({ goal, config, options = {} }) {
       mutationStore
     });
     stageContext.execution = executionResult.text;
+    emitProgress(options, {
+      type: 'execute_done',
+      attempt,
+      totalAttempts: maxAttempts,
+      toolCalls: executionResult.toolCalls || 0
+    });
     await trace.event('stage_complete', {
       stage: 'execute',
       attempt,
@@ -74,6 +90,18 @@ export async function runTaskStateMachine({ goal, config, options = {} }) {
       skillsAddendum
     });
     stageContext.verify.push({ attempt, ...verification });
+    emitProgress(options, {
+      type: 'verify',
+      attempt,
+      totalAttempts: maxAttempts,
+      passed: verification.passed,
+      failureCategory: verification.failureCategory || null,
+      rounds: verification.rounds,
+      failedCommands: verification.results
+        .filter((x) => !x.ok)
+        .slice(0, 4)
+        .map((x) => x.command)
+    });
     await trace.event('stage_complete', {
       stage: 'verify',
       attempt,
@@ -104,6 +132,10 @@ export async function runTaskStateMachine({ goal, config, options = {} }) {
         ok: true
       });
       await trace.event('task_complete', { ok: true });
+      emitProgress(options, {
+        type: 'task_complete',
+        ok: true
+      });
       return { ok: true, summary: summaryResult.text, state: stageContext };
     }
 
@@ -113,6 +145,14 @@ export async function runTaskStateMachine({ goal, config, options = {} }) {
       nextAttempt: attempt + 1,
       failureCategory: verification.failureCategory,
       failureDetail: lastFailure.slice(0, 2000)
+    });
+    emitProgress(options, {
+      type: 'retry',
+      attempt,
+      nextAttempt: attempt + 1,
+      totalAttempts: maxAttempts,
+      failureCategory: verification.failureCategory || 'unknown',
+      failureDetail: lastFailure.slice(0, 500)
     });
 
     if (attempt < maxAttempts) {
@@ -144,6 +184,10 @@ export async function runTaskStateMachine({ goal, config, options = {} }) {
   });
 
   await trace.event('task_complete', { ok: false });
+  emitProgress(options, {
+    type: 'task_complete',
+    ok: false
+  });
   const extra = rollbackApplied ? '\\n\\nRollback: applied (auto-rollback-on-fail)' : '';
   return { ok: false, summary: failedSummary.text + extra, state: stageContext };
 }
@@ -431,6 +475,12 @@ function emitStage(options, payload) {
   }
 
   logTask(`stage> ${payload.stage}`, options);
+}
+
+function emitProgress(options, payload) {
+  if (typeof options?.onProgress === 'function') {
+    options.onProgress(payload);
+  }
 }
 
 function logTask(text, options) {

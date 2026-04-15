@@ -85,7 +85,10 @@ export async function runTasksExecCommand(args) {
         ...options,
         cwd,
         mode: 'task',
-        enableTools: true
+        enableTools: true,
+        onProgress: (event) => {
+          writeTaskProgressLog(event);
+        }
       }
     });
 
@@ -104,6 +107,42 @@ export async function runTasksExecCommand(args) {
     });
     console.error(message);
     process.exit(1);
+  }
+}
+
+function writeTaskProgressLog(event) {
+  if (!event || !event.type) {
+    return;
+  }
+  if (event.type === 'plan') {
+    const text = String(event.text || '').trim();
+    if (!text) {
+      return;
+    }
+    console.log('[plan]');
+    console.log(text);
+    return;
+  }
+  if (event.type === 'attempt_start') {
+    console.log(`[progress] attempt ${event.attempt}/${event.totalAttempts}`);
+    return;
+  }
+  if (event.type === 'verify') {
+    const failed = Array.isArray(event.failedCommands) ? event.failedCommands.filter(Boolean) : [];
+    if (event.passed) {
+      console.log(`[verify] passed in round ${event.rounds}`);
+    } else {
+      const suffix = failed.length ? ` failed: ${failed.join(' | ')}` : '';
+      console.log(`[verify] failed (${event.failureCategory || 'unknown'})${suffix}`);
+    }
+    return;
+  }
+  if (event.type === 'retry') {
+    const detail = String(event.failureDetail || '').split('\n')[0].slice(0, 140);
+    const more = detail ? `, reason: ${detail}` : '';
+    console.log(
+      `[retry] ${event.attempt}/${event.totalAttempts}, next ${event.nextAttempt}/${event.totalAttempts}${more}`
+    );
   }
 }
 

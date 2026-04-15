@@ -98,6 +98,8 @@ export async function runAgentCompletion({
   const loopMessages = [...messages];
   let totalToolCalls = 0;
   let aggregateUsage = emptyUsage();
+  let repeatedPermissionFailureRounds = 0;
+  let lastPermissionSignature = '';
 
   const compactionThreshold =
     (process.env.OVOPRE_COMPACTION_THRESHOLD ? Number(process.env.OVOPRE_COMPACTION_THRESHOLD) : 0) ||
@@ -231,6 +233,29 @@ export async function runAgentCompletion({
         })
       });
     }
+
+    const permissionSignal = summarizePermissionFailure(sorted);
+    if (permissionSignal.allPermissionDenied) {
+      if (permissionSignal.signature === lastPermissionSignature) {
+        repeatedPermissionFailureRounds += 1;
+      } else {
+        lastPermissionSignature = permissionSignal.signature;
+        repeatedPermissionFailureRounds = 1;
+      }
+
+      if (repeatedPermissionFailureRounds >= 2) {
+        throw new Error(
+          [
+            'Repeated filesystem permission failures while executing tools.',
+            `Likely blocked path: ${permissionSignal.pathHint || 'unknown'}.`,
+            'If this path is read-only (for example /project), choose a writable path such as the current repository directory.'
+          ].join(' ')
+        );
+      }
+    } else {
+      repeatedPermissionFailureRounds = 0;
+      lastPermissionSignature = '';
+    }
   }
 
   throw new Error('Tool loop exceeded max rounds');
@@ -263,4 +288,55 @@ function mergeUsage(base, extra) {
     completion_tokens: Number(base.completion_tokens || 0) + Number(extra.completion_tokens || 0),
     total_tokens: Number(base.total_tokens || 0) + Number(extra.total_tokens || 0)
   };
+}
+
+function summarizePermissionFailure(execResults) {
+  if (!Array.isArray(execResults) || !execResults.length) {
+    return { allPermissionDenied: false, signature: '', pathHint: '' };
+  }
+
+  const failed = execResults.filter((item) => !item?.toolResult?.ok);
+  if (!failed.length || failed.length !== execResults.length) {
+    return { allPermissionDenied: false, signature: '', pathHint: '' };
+  }
+
+  const extracted = failed
+    .map((item) => {
+      const output = String(item?.toolResult?.output || '');
+      const lower = output.toLowerCase();
+      const isPermission =
+        lower.includes('eacces') ||
+        lower.includes('eperm') ||
+        lower.includes('erofs') ||
+        lower.includes('permission denied') ||
+        lower.includes('read-only file system');
+      if (!isPermission) return null;
+      return {
+        toolName: String(item?.call?.function?.name || ''),
+        pathHint: extractPathHint(output)
+      };
+    })
+    .filter(Boolean);
+
+  if (extracted.length !== failed.length) {
+    return { allPermissionDenied: false, signature: '', pathHint: '' };
+  }
+
+  const signature = extracted
+    .map((x) => `${x.toolName}:${x.pathHint || '?'}`)
+    .sort()
+    .join('|');
+
+  const firstPath = extracted.find((x) => x.pathHint)?.pathHint || '';
+  return {
+    allPermissionDenied: true,
+    signature,
+    pathHint: firstPath
+  };
+}
+
+function extractPathHint(text) {
+  const source = String(text || '');
+  const absPathMatch = source.match(/(\/[^\s:'"]+)/);
+  return absPathMatch ? absPathMatch[1] : '';
 }

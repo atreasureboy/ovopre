@@ -405,6 +405,9 @@ async function createSessionEntry(server, baseCwd, key) {
       session.close().catch(() => {});
     });
   }, HEARTBEAT_INTERVAL_MS);
+  if (typeof entry.heartbeatTimer.unref === 'function') {
+    entry.heartbeatTimer.unref();
+  }
 
   return entry;
 }
