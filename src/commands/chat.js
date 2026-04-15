@@ -82,7 +82,9 @@ export async function runTask(goal, options = {}) {
         toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
       },
       onToolCallEnd: ({ name, ok, durationMs, index }) => {
-        console.log(formatToolLine(name, ok, durationMs, toolArgMap.get(index) || ''));
+        if (!isInternalTool(name)) {
+          console.log(formatToolLine(name, ok, durationMs, toolArgMap.get(index) || ''));
+        }
       },
       onProgress: printTaskProgress,
     },
@@ -179,9 +181,10 @@ async function runAgentTurn(messages, config, options, { isTerminal, verboseUi }
       if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
       uiState.toolCalls = index;
       toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
-      if (verboseUi) console.log(formatToolStart(name, index));
+      if (verboseUi && !isInternalTool(name)) console.log(formatToolStart(name, index));
     } : undefined,
     onToolCallEnd: isTerminal ? ({ name, ok, durationMs, output, index }) => {
+      if (isInternalTool(name)) return;
       if (verboseUi) {
         console.log(formatToolEnd(name, ok, durationMs, { output }));
       } else {
@@ -345,15 +348,22 @@ async function buildBaseMessages(systemPrompt, mode = 'chat', cwd = process.cwd(
       'Primary goal: complete the user task end-to-end. ' +
       'You can call tools to inspect files, edit files, and run shell commands. ' +
       'Work directly and efficiently. Do not ask for permission before tool usage.'
-    : 'You are ovopre, a pragmatic coding CLI assistant. ' +
-      'In interactive chat mode, behave like a polished terminal coding agent. ' +
-      'When a request requires tool use or file changes, open with one concise line ' +
-      'stating your approach (e.g. "Reading auth module then patching the handler."), ' +
-      'then execute directly without further commentary. ' +
-      'For simple questions or explanations, answer directly without any preamble. ' +
-      'Report outcomes concisely: changed files, what changed, why it satisfies the goal. ' +
-      'Do not be chatty or pad responses. ' +
-      'If blocked, state the blocker and give the shortest useful next action.';
+    : 'You are ovopre, a pragmatic coding CLI assistant.\n\n' +
+      'When a request involves tool use or file changes, follow this structure:\n\n' +
+      '1. OUTPUT A PLAN FIRST (before any tool calls):\n' +
+      '   Plan:\n' +
+      '   1. First major step\n' +
+      '      - sub-step or detail\n' +
+      '      - sub-step or detail\n' +
+      '   2. Second major step\n' +
+      '      - detail\n\n' +
+      '2. EXECUTE STEP BY STEP. At the start of each major step emit a short marker:\n' +
+      '   → Step 1: <brief description>\n\n' +
+      '3. REPORT WHEN DONE:\n' +
+      '   Done. <files changed>, <what changed>, <outcome>.\n\n' +
+      'For simple questions or explanations: answer directly, no plan needed.\n' +
+      'Do not be chatty or pad responses. Do not repeat the plan in the summary.\n' +
+      'If blocked mid-execution, state the blocker and adjust the remaining plan steps.';
 
   const [skillsAddendum, memoriesAddendum] = await Promise.all([
     buildSkillsSystemAddendum(cwd),
@@ -399,6 +409,13 @@ async function runQuickPlan(goal, options = {}) {
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
+
+// Tool names that are internal state mechanics — not shown in the tool display.
+const INTERNAL_TOOLS = new Set(['enter_plan_mode', 'exit_plan_mode', 'tool_search']);
+
+function isInternalTool(name) {
+  return INTERNAL_TOOLS.has(String(name).toLowerCase());
+}
 
 function addUsage(current, extra) {
   const base = current || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };

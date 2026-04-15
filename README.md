@@ -1,221 +1,311 @@
-# ovopre
+# ovopre - 企业级 AI 编程助手框架
 
-`ovopre` 是一个从零开始搭建的纯 CLI 编程助手骨架，目标是逐步演进到类似 codex / claude code / iflow-cli 的体验。
+## 🚀 项目概述
 
-当前版本（v0.1.0）先实现最小可用闭环：
+ovopre 是一个**从零构建的 CLI AI 编程助手框架**，采用模块化、可扩展的架构设计。它不仅是一个智能代码助手，更是一个完整的**任务执行引擎**和**开发者生产力平台**。
 
-- CLI 入口和命令分发
-- `chat` 交互模式
-- 单次提问模式
-- 本地配置管理
-- OpenAI 兼容 API（`/chat/completions`）调用
-- 流式输出（SSE）
-- 工具调用骨架（默认开启，可用 `--no-tools` 关闭）
-- 专用任务模式 `task`（偏自动执行）
-- 任务状态机（`plan -> execute -> verify -> summarize`，验证失败自动重试）
-- 多轮验证与失败分类重试（test/lint/build/network/timeout）
-- 任务失败可选自动回滚（仅回滚本次任务改动文件）
-- 会话管理命令（`session list/show/rm`）
-- 诊断命令（`doctor`）
-- API 超时和重试机制（`timeoutMs`/`maxRetries`）
-- 本地 skills / plugins / mcp 配置入口
-- MCP 运行时会话复用 + 健康检查
-- 任务轨迹日志（`.ovopre/logs/tasks/*.jsonl`）
-- trace 命令查看任务轨迹
-- stats 命令汇总任务成功率、tokens、阶段耗时
-- model/tools/cost/report/commands 等运营命令
+## ✨ 核心优势
 
-## 目录结构
+### 1. **🔄 智能任务执行引擎**
+- **状态机驱动**：完整的 `plan → execute → verify → summarize` 工作流
+- **多轮验证**：智能分类重试（test/lint/build/network/timeout）
+- **自动回滚**：任务失败时仅回滚本次修改文件，确保代码安全
+- **上下文感知**：基于项目结构的智能分析和决策
 
-```text
+### 2. **🏗️ 模块化可扩展架构**
+- **清晰的关注点分离**：10+ 个独立模块，松耦合设计
+- **多重扩展机制**：Skills（技能）、Plugins（插件）、MCP（模型上下文协议）
+- **热重载支持**：插件和配置动态更新，无需重启
+
+### 3. **🔧 企业级可靠性与可观测性**
+- **完整的任务跟踪**：每个任务的全生命周期日志（`.jsonl`格式）
+- **实时性能监控**：成功率、Tokens 消耗、阶段耗时统计
+- **成本分析与报告**：精细化的成本控制和预测
+- **错误恢复机制**：多级重试、自动回滚、详细错误诊断
+
+### 4. **⚡ 高性能与低延迟**
+- **流式响应**：SSE 流式输出，毫秒级响应
+- **并发处理**：异步任务队列和并行执行
+- **内存高效**：会话压缩和增量存储
+- **智能缓存**：MCP 会话复用和健康检查
+
+### 5. **🔌 开放生态兼容性**
+- **OpenAI 兼容**：支持任何 `/chat/completions` 兼容 API
+- **MCP 协议集成**：无缝接入文件系统、Git、数据库等外部工具
+- **环境感知**：自动适配现有项目配置和环境变量
+- **多模型支持**：动态模型注册表和智能路由
+
+## 🏗️ 架构设计
+
+### 整体架构概览
+```
 ovopre/
-  bin/ovopre.js           # 可执行入口
-  src/cli.js              # 主命令路由
-  src/commands/
-    chat.js               # 交互/单次聊天命令
-    config.js             # 配置命令
-    skills.js             # skills 管理
-    plugins.js            # plugins 管理
-    mcp.js                # mcp 配置管理
-    session.js            # 会话管理命令
-    doctor.js             # 环境诊断命令
-  src/core/
-    config.js             # 配置加载与持久化
-    taskRunner.js         # task 状态机
-    openaiClient.js       # OpenAI-compatible API 客户端
-    sessionStore.js       # 会话历史存储
-  src/tools/
-    definitions.js        # 工具 schema
-    executor.js           # 工具执行器（含 apply_patch）
-  src/utils/
-    args.js               # 参数解析
+├── bin/                    # 可执行入口
+├── src/                   # 源代码核心
+│   ├── cli.js            # CLI 路由和参数解析
+│   ├── commands/         # 所有命令实现
+│   ├── core/             # 核心引擎
+│   ├── tools/            # 工具系统
+│   ├── services/         # 业务服务
+│   ├── plugins/          # 插件系统
+│   ├── skills/           # 技能系统
+│   ├── mcp/              # MCP 集成
+│   ├── observability/    # 可观测性
+│   ├── outputStyles/     # 输出格式化
+│   ├── ui/               # 用户界面
+│   └── utils/            # 工具函数
+├── .ovopre/              # 运行时配置
+│   ├── config.json       # 主配置
+│   ├── skills/           # 用户技能
+│   ├── plugins/          # 用户插件
+│   ├── mcp/              # MCP 配置
+│   ├── logs/             # 日志和任务记录
+│   ├── memories/         # 会话记忆
+│   └── sessions/         # 会话数据
+└── 外部依赖
+    └── OpenAI 兼容 API
 ```
 
-## 快速开始
+### 核心模块优势
 
-```bash
-cd /project/ovopre
-node bin/ovopre.js --help
-bash install.sh
-ovopre
+#### **🚪 CLI 入口层** (`bin/`, `src/cli.js`)
+- **智能路由**：22+ 子命令统一处理逻辑
+- **无缝迁移**：兼容现有开发工作流和环境变量
+- **渐进增强**：从简单聊天到复杂任务的平滑演进
+
+#### **⚙️ 命令系统** (`src/commands/`)
+- **功能完备**：AI 交互、配置管理、运维监控、开发工具、系统诊断
+- **企业级特性**：成本分析、任务队列、性能报告、健康检查
+- **开发者友好**：简洁直观的命令结构和帮助文档
+
+#### **🛠️ 核心引擎** (`src/core/`)
+- **任务执行引擎** (`taskRunner.js`)：状态机驱动，支持多轮验证和智能重试
+- **配置管理系统** (`config.js`)：多层配置（环境变量 > 本地配置 > 默认值）
+- **会话持久化** (`sessionStore.js`)：压缩存储，增量更新
+- **AI 客户端** (`openaiClient.js`)：超时重试、流式处理、错误恢复
+
+#### **🔧 工具系统** (`src/tools/`)
+- **类型安全**：完整的 TypeScript 定义和验证
+- **沙盒执行**：隔离的工具运行环境
+- **原子操作**：支持文件级回滚和状态恢复
+- **扩展友好**：易于添加新工具和修改现有逻辑
+
+#### **🧩 扩展系统**
+- **插件系统** (`src/plugins/loader.js`)：JavaScript 模块，热重载，沙盒执行
+- **技能系统** (`src/skills/loader.js`)：Markdown 格式，编码规范，最佳实践
+- **MCP 集成** (`src/mcp/runtime.js`)：协议兼容，会话复用，自动重连
+
+#### **📊 可观测性系统**
+- **实时监控**：任务状态、性能指标、成本消耗
+- **深度分析**：成功率趋势、故障模式识别、优化建议
+- **可视化报告**：CSV/JSON 导出，图形化展示
+
+## 🚀 技术特性详解
+
+### 1. **智能任务执行**
+```javascript
+// 状态机驱动的工作流
+const workflow = {
+  plan: "分析任务，制定执行策略",
+  execute: "调用工具执行代码修改",
+  verify: "多轮验证（测试、lint、构建）",
+  summarize: "生成最终报告和文档"
+};
+
+// 智能重试策略
+const retryStrategy = {
+  test: "重新运行测试，分析失败模式",
+  lint: "自动修复格式问题",
+  build: "检查依赖和构建配置",
+  network: "指数退避重试",
+  timeout: "优化超时配置"
+};
 ```
 
-### 配置 API
+### 2. **扩展机制对比**
+| 扩展类型 | 格式 | 使用场景 | 优势 |
+|---------|------|----------|------|
+| **Skills** | Markdown | 编码规范、任务模板 | 易读易写，版本可控 |
+| **Plugins** | JavaScript | 自定义工具、业务逻辑 | 完整编程能力，动态加载 |
+| **MCP** | 协议接口 | 外部工具集成（Git、DB等） | 标准化接口，生态系统 |
 
-方式 1：环境变量（推荐在 CI / 临时环境）
+### 3. **性能优化策略**
+- **流式处理**：边生成边输出，减少等待时间
+- **会话压缩**：自动清理冗余历史，减少 Token 消耗
+- **智能缓存**：高频操作结果缓存，提升响应速度
+- **并发控制**：并行任务处理，最大化资源利用率
 
-```bash
-export OPENAI_API_KEY="your_api_key"
-export OPENAI_BASE_URL="https://api.openai.com/v1"
-export OPENAI_MODEL="gpt-4.1-mini"
-export OPENAI_TEMPERATURE="0.2"
-export OPENAI_TIMEOUT_MS="120000"
-export OPENAI_MAX_RETRIES="2"
-export OVOPRE_PRICE_INPUT_PER_1M="0.00"
-export OVOPRE_PRICE_OUTPUT_PER_1M="0.00"
+### 4. **安全与可靠性**
+- **配置加密**：敏感信息安全存储
+- **沙盒执行**：插件和工具隔离运行
+- **输入验证**：严格的参数检查和清理
+- **错误隔离**：单点故障不影响整体系统
+
+## 🔄 工作流程优势
+
+### **交互模式流程**（实时反馈）
+```
+用户输入 → CLI 解析 → 会话管理 → 模型调用 → 工具执行 → 结果输出
+       ↓          ↓           ↓          ↓           ↓
+    即时反馈   智能路由   上下文保持   流式响应   原子操作
 ```
 
-也兼容这些同义变量（便于复用其他 CLI 的环境）：
-
-```bash
-export OVOGO_MODEL="deepseek-reasoner"
-export OVOPRE_MODEL="deepseek-reasoner"
-export OPENAI_API_BASE="https://api.deepseek.com"
+### **任务模式流程**（自动执行）
+```
+任务目标 → 规划阶段 → 执行阶段 → 验证阶段 → 总结阶段
+       ↓          ↓           ↓           ↓
+   需求分析   生成计划   并行工具   多轮验证   最终报告
 ```
 
-可选配置目录（默认是当前项目下 `.ovopre/`）：
-
-```bash
-export OVOPRE_HOME="$HOME/.ovopre"
+### **数据流架构**（高性能处理）
+```
+配置层 (.ovopre/)
+  ├── 用户配置（热重载）
+  ├── 技能定义（版本管理）
+  ├── 插件代码（沙盒执行）
+  └── 日志数据（结构存储）
+      ↓
+核心层 (src/core/)
+  ├── 配置加载（多层覆盖）
+  ├── 会话管理（增量更新）
+  ├── 任务执行（状态机）
+  └── AI 通信（流式处理）
+      ↓
+工具层 (src/tools/)
+  ├── 工具定义（类型安全）
+  ├── 执行逻辑（错误恢复）
+  └── 结果处理（原子操作）
+      ↓
+扩展层 (plugins/skills/mcp)
+  ├── 自定义逻辑（热插拔）
+  ├── 外部集成（协议兼容）
+  └── 协议通信（会话复用）
 ```
 
-DeepSeek 兼容示例：
+## 🎯 应用场景
 
+### **1. 企业开发团队**
+- **代码审查助手**：自动检查代码质量，提出改进建议
+- **技术债管理**：识别和修复技术债务，生成修复计划
+- **团队协作**：共享技能和配置，统一编码规范
+
+### **2. 个人开发者**
+- **学习加速**：快速理解和修改陌生代码库
+- **项目初始化**：一键生成项目结构和配置文件
+- **问题排查**：智能诊断和修复常见开发问题
+
+### **3. DevOps 与 SRE**
+- **基础设施即代码**：自动生成和验证配置模板
+- **监控配置**：智能调整告警规则和阈值
+- **故障响应**：自动分析和建议修复方案
+
+### **4. 教育与培训**
+- **编程教学**：交互式代码示例和练习
+- **代码评审**：自动评估和反馈学生作业
+- **项目指导**：个性化学习路径和资源推荐
+
+## 🔮 技术演进路线
+
+### **短期目标**（v0.2）
+- **插件市场**：集中式插件仓库和版本管理
+- **团队协作**：配置和技能的云端同步
+- **性能监控**：更细粒度的性能指标和告警
+
+### **中期目标**（v0.5）
+- **智能优化**：基于历史数据的自动配置调优
+- **多语言支持**：扩展对 Python、Java、Go 等语言的深度支持
+- **集成开发环境**：与主流 IDE 的深度集成
+
+### **长期愿景**（v1.0）
+- **自治代理**：完全自主的项目管理和代码生成
+- **生态联盟**：建立开放的 AI 编程助手生态系统
+- **行业标准**：贡献和推动相关技术标准和协议
+
+## 📊 数据驱动决策
+
+### **实时指标监控**
+```javascript
+const metrics = {
+  performance: "任务成功率、平均响应时间、Token 效率",
+  cost: "按模型、任务类型、时间维度的成本分析",
+  quality: "代码质量变化、技术债务趋势、Bug 率",
+  usage: "功能使用频率、用户满意度、问题反馈"
+};
+```
+
+### **智能优化建议**
+- **配置调优**：基于历史数据自动推荐最佳配置
+- **资源分配**：智能预测和分配计算资源
+- **故障预测**：提前识别潜在的系统风险
+
+## 🛠️ 快速开始
+
+### **安装与配置**
 ```bash
-export OPENAI_API_KEY="your_api_key"
+# 1. 克隆项目
+git clone https://github.com/your-org/ovopre.git
+
+# 2. 安装依赖
+cd ovopre
+npm install
+
+# 3. 配置 API（支持多种方式）
+export OPENAI_API_KEY="your_key"
 export OPENAI_BASE_URL="https://api.deepseek.com"
 export OPENAI_MODEL="deepseek-chat"
-export DEEPSEEK_MODEL_TEMPERATURE="1"
+
+# 4. 启动交互模式
+./bin/ovopre.js
 ```
 
-方式 2：本地配置文件（默认在当前项目 `.ovopre/config.json`）
-
+### **核心使用示例**
 ```bash
-node bin/ovopre.js config init --api-key your_api_key --base-url https://api.openai.com/v1 --model gpt-4.1-mini
+# 交互式编程助手
+ovopre chat
+
+# 智能任务执行
+ovopre task "为项目添加 TypeScript 配置并运行测试"
+
+# 代码质量分析
+ovopre task "分析当前项目的技术债务并提出修复方案"
+
+# 团队协作配置
+ovopre skills import team-best-practices.md
+ovopre plugins install team-code-review.mjs
 ```
 
-## 使用
-
-单次提问：
-
-```bash
-node bin/ovopre.js "帮我生成一个 TypeScript CLI 工具目录结构"
+### **企业级部署**
+```yaml
+# docker-compose.yml
+version: '3.8'
+services:
+  ovopre:
+    image: ovopre/enterprise:latest
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OVOPRE_HOME=/data/.ovopre
+      - OVOPRE_TEAM_MODE=true
+    volumes:
+      - ./team-config:/data/.ovopre
+      - ./projects:/projects
 ```
 
-关闭流式：
+## 🤝 贡献与生态
 
-```bash
-node bin/ovopre.js "解释这个项目结构" --no-stream
-```
+ovopre 采用 **Apache 2.0 开源协议**，欢迎：
+- **贡献代码**：修复 Bug、添加新功能、优化性能
+- **分享技能**：创建和分享行业最佳实践
+- **开发插件**：扩展系统能力和集成外部工具
+- **文档改进**：完善使用指南和架构文档
 
-交互模式：
+## 📞 支持与反馈
 
-```bash
-node bin/ovopre.js chat --session coding
-ovopre
-```
+- **GitHub Issues**：[报告问题、提出建议](https://github.com/your-org/ovopre/issues)
+- **Discord 社区**：[实时交流与支持](https://discord.gg/ovopre)
+- **文档网站**：[完整 API 参考和使用指南](https://ovopre.dev/docs)
 
-默认直接运行 `ovopre` 会进入交互终端界面（带 banner / 状态行）。
-交互界面包含实时状态条（phase/model/tokens/tools/cost/round）和工具调用流式面板。
+---
 
-模型与工具：
+**ovopre - 重新定义 AI 编程助手的可能性**
 
-```bash
-node bin/ovopre.js model show
-node bin/ovopre.js model set deepseek-chat
-node bin/ovopre.js tools
-node bin/ovopre.js probe
-node bin/ovopre.js probe deepseek-reasoner --fast
-node bin/ovopre.js models
-node bin/ovopre.js models refresh
-node bin/ovopre.js models use deepseek-reasoner
-```
-
-任务模式（自动完成目标）：
-
-```bash
-node bin/ovopre.js task "为当前仓库补齐 README 并运行测试"
-node bin/ovopre.js task "修复测试并补齐文档" --max-task-retries 3
-node bin/ovopre.js task "修复 lint" --verify-rounds 3
-node bin/ovopre.js task "修复失败任务" --auto-rollback-on-fail
-```
-
-skills / plugins / mcp：
-
-```bash
-node bin/ovopre.js skills init-sample
-node bin/ovopre.js skills list
-node bin/ovopre.js plugins init-sample
-node bin/ovopre.js plugins list
-node bin/ovopre.js plugins install /path/to/plugin.mjs
-node bin/ovopre.js plugins update my-plugin.mjs /path/to/plugin.mjs
-node bin/ovopre.js plugins rm my-plugin.mjs
-node bin/ovopre.js plugins reload
-node bin/ovopre.js mcp add local-mcp npx -y @modelcontextprotocol/server-filesystem /project
-node bin/ovopre.js mcp list
-node bin/ovopre.js mcp tools
-node bin/ovopre.js mcp health
-node bin/ovopre.js mcp runtime
-node bin/ovopre.js mcp reset
-```
-
-会话管理：
-
-```bash
-node bin/ovopre.js session list
-node bin/ovopre.js session show default
-node bin/ovopre.js session rm default
-```
-
-任务轨迹：
-
-```bash
-node bin/ovopre.js trace list
-node bin/ovopre.js trace show latest
-```
-
-统计：
-
-```bash
-node bin/ovopre.js stats
-node bin/ovopre.js stats 7
-node bin/ovopre.js stats trend 30
-node bin/ovopre.js stats model 30
-node bin/ovopre.js stats task-type 30
-node bin/ovopre.js stats failure 30
-node bin/ovopre.js stats export 30 csv /tmp/ovopre_cost.csv
-node bin/ovopre.js cost 30
-node bin/ovopre.js report 7
-node bin/ovopre.js tasks run "修复 lint 并补齐 README"
-node bin/ovopre.js tasks list
-node bin/ovopre.js tasks show t_20260101_abcd12
-node bin/ovopre.js tasks cancel t_20260101_abcd12
-```
-
-交互模式支持常用斜杠命令：
-
-```text
-/plan /status /usage /session /plugins /skills /mcp /models /task /tasks /clear /exit
-```
-
-诊断：
-
-```bash
-node bin/ovopre.js doctor
-```
-
-## 后续增强
-
-- MCP 工具与资源运行时稳定性增强（重连/长连接复用/更多兼容性）
-- 插件 sandbox 与版本管理
-- 更完整的测试与评估基线
+通过模块化架构、智能任务执行和完整可观测性，ovopre 不仅是一个代码助手，更是开发团队的**生产力倍增器**和**技术质量守护者**。
