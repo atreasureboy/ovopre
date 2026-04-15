@@ -52,9 +52,8 @@ export async function runAgentCompletion({
         timeoutMs: targetTimeoutMs,
         maxRetries: targetMaxRetries,
         messages,
-        onToken: onToken ?? ((tok) => process.stdout.write(tok))
+        onToken
       });
-      if (!onToken) process.stdout.write('\n');
       if (onUsage) onUsage({ delta: streamed.usage || null, aggregate: streamed.usage || null, round: 1 });
       return {
         text: streamed.text,
@@ -101,10 +100,7 @@ export async function runAgentCompletion({
   let repeatedPermissionFailureRounds = 0;
   let lastPermissionSignature = '';
 
-  const compactionThreshold =
-    (process.env.OVOPRE_COMPACTION_THRESHOLD ? Number(process.env.OVOPRE_COMPACTION_THRESHOLD) : 0) ||
-    config.compactionThreshold ||
-    80000;
+  const compactionThreshold = config.compactionThreshold || 80000;
 
   for (let i = 0; i < maxToolRounds; i += 1) {
     const round = i + 1;
@@ -172,7 +168,7 @@ export async function runAgentCompletion({
         try { parsedArgs = JSON.parse(rawArgs); } catch { parsedArgs = {}; }
 
         if (onToolCallStart) {
-          onToolCallStart({ index: callIndex, name: toolName, call, round });
+          onToolCallStart({ index: callIndex, name: toolName, call, parsedArgs, round });
         }
 
         // Pre-hook (may block the tool)

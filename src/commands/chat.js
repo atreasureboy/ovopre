@@ -18,6 +18,7 @@ import { runSkillsCommand } from './skills.js';
 import { runMcpCommand } from './mcp.js';
 import { runTasksCommand } from './tasks.js';
 import {
+  extractPrimaryArg,
   formatAssistant,
   formatInfo,
   formatStatusBar,
@@ -79,11 +80,9 @@ export async function runOneShot(prompt, options = {}) {
       }
     },
     onToolCallStart: fmt.isTerminal
-      ? ({ index, name, call }) => {
+      ? ({ index, name, parsedArgs = {} }) => {
           if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
           uiState.toolCalls = index;
-          let parsedArgs = {};
-          try { parsedArgs = JSON.parse(call?.function?.arguments || '{}'); } catch {}
           toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
           if (verboseUi) console.log(formatToolStart(name, index));
         }
@@ -99,8 +98,9 @@ export async function runOneShot(prompt, options = {}) {
       : undefined
   });
 
-  if (streamStarted) process.stdout.write('\n');
-  if (!streamStarted) {
+  if (streamStarted) {
+    process.stdout.write('\n');
+  } else {
     fmt.result((result.text || '').trim(), result.usage);
   }
 }
@@ -110,9 +110,8 @@ export async function runTask(goal, options = {}) {
   const fmt = createFormatter(options.output);
   const state = { usage: null, toolCalls: 0, round: null };
   const model = options.model || config.model;
-  if (!fmt.isJson) {
-    console.log(formatStatusBar({ phase: 'task:start', model, usage: null, toolCalls: 0 }));
-  }
+  const toolArgMap = new Map();
+
   const result = await runTaskStateMachine({
     goal,
     config,
@@ -126,28 +125,19 @@ export async function runTask(goal, options = {}) {
           console.log(formatStatusBar({ phase: `task:${stage}`, model, usage: state.usage, toolCalls: state.toolCalls, round: state.round }));
         }
       },
-      onRoundStart: (round) => {
-        state.round = round;
-        // silent — stage change already signals phase transitions
-      },
+      onRoundStart: (round) => { state.round = round; },
       onUsage: ({ delta, aggregate, round }) => {
         state.usage = addUsage(state.usage, delta || aggregate);
         state.round = round || state.round;
-        // silent — token counts accumulate for final summary only
       },
-      onToolCallStart: ({ index, name, call }) => {
+      onToolCallStart: ({ index, name, parsedArgs = {} }) => {
         state.toolCalls = index;
-        let parsedArgs = {};
-        try { parsedArgs = JSON.parse(call?.function?.arguments || '{}'); } catch {}
-        state.toolArgMap = state.toolArgMap || new Map();
-        state.toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
+        toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
       },
       onToolCallEnd: ({ name, ok, durationMs, index }) => {
-        console.log(formatToolLine(name, ok, durationMs, (state.toolArgMap && state.toolArgMap.get(index)) || ''));
+        console.log(formatToolLine(name, ok, durationMs, toolArgMap.get(index) || ''));
       },
-      onProgress: (event) => {
-        printTaskProgress(event);
-      }
+      onProgress: printTaskProgress
     }
   });
   fmt.taskResult(result.ok, result.summary, state.usage);
@@ -273,46 +263,10 @@ export async function runInteractiveChat(options = {}) {
           console.log(formatWarn('usage: /task <goal>'));
           continue;
         }
-        const state = { usage: null, toolCalls: 0, round: null };
-        const taskModel = options.model || config.model;
         try {
-          const taskResult = await runTaskStateMachine({
-            goal,
-            config,
-            options: {
-              ...options,
-              mode: 'task',
-              enableTools,
-              quiet: true,
-              onStage: ({ stage }) => {
-                console.log(formatStatusBar({ phase: `task:${stage}`, model: taskModel, usage: state.usage, toolCalls: state.toolCalls, round: state.round }));
-              },
-              onRoundStart: (round) => {
-                state.round = round;
-              },
-              onUsage: ({ delta, aggregate, round }) => {
-                state.usage = addUsage(state.usage, delta || aggregate);
-                state.round = round || state.round;
-              },
-              onToolCallStart: ({ index, name, call }) => {
-                state.toolCalls = index;
-                let parsedArgs = {};
-                try { parsedArgs = JSON.parse(call?.function?.arguments || '{}'); } catch {}
-                state.toolArgMap = state.toolArgMap || new Map();
-                state.toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
-              },
-              onToolCallEnd: ({ name, ok, durationMs, index }) => {
-                console.log(formatToolLine(name, ok, durationMs, (state.toolArgMap && state.toolArgMap.get(index)) || ''));
-              },
-              onProgress: (event) => {
-                printTaskProgress(event);
-              }
-            }
-          });
-          console.log(formatAssistant((taskResult.summary || '').trim()));
+          await runTask(goal, options);
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.log(formatWarn(`task failed: ${message}`));
+          console.log(formatWarn(`task failed: ${String(error?.message || error)}`));
         }
         continue;
       }
@@ -376,15 +330,11 @@ export async function runInteractiveChat(options = {}) {
               console.log(formatStatusBar({ phase: 'llm', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round: uiState.round }));
             }
           },
-          onToolCallStart: ({ index, name, call }) => {
+          onToolCallStart: ({ index, name, parsedArgs = {} }) => {
             if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
             uiState.toolCalls = index;
-            let parsedArgs = {};
-            try { parsedArgs = JSON.parse(call?.function?.arguments || '{}'); } catch {}
             toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
-            if (verboseUi) {
-              console.log(formatToolStart(name, index));
-            }
+            if (verboseUi) console.log(formatToolStart(name, index));
           },
           onToolCallEnd: ({ name, ok, durationMs, output, index }) => {
             if (verboseUi) {
@@ -420,10 +370,7 @@ export async function runInteractiveChat(options = {}) {
         // Cross-turn compaction: if the last prompt_tokens usage shows we're
         // approaching the context limit, compact before the next user turn.
         const lastPromptTokens = result.usage?.prompt_tokens || 0;
-        const compactionThreshold =
-          (process.env.OVOPRE_COMPACTION_THRESHOLD ? Number(process.env.OVOPRE_COMPACTION_THRESHOLD) : 0) ||
-          config.compactionThreshold ||
-          80000;
+        const compactionThreshold = config.compactionThreshold || 80000;
         if (lastPromptTokens >= compactionThreshold) {
           const compactResult = await maybeCompact(messages, config, {
             currentTokens: lastPromptTokens,
@@ -546,36 +493,6 @@ function addUsage(current, extra) {
   };
 }
 
-/**
- * Extract the most meaningful argument from a tool call to show in the UI.
- * Returns a short string like "README.md" or "npm test" to display as
- *   ⏺ read_file(README.md)  3ms
- */
-function extractPrimaryArg(name, args) {
-  if (!args || typeof args !== 'object') return '';
-  // Common argument name patterns ordered by priority
-  const candidates = [
-    args.path, args.file_path, args.filename, args.file,
-    args.command, args.cmd,
-    args.query, args.pattern,
-    args.url,
-    args.content && args.path ? args.path : null,  // write_file: show path not content
-  ];
-  for (const v of candidates) {
-    if (v && typeof v === 'string') {
-      // shorten to last path segment if it looks like a path
-      const short = v.includes('/') ? v.split('/').filter(Boolean).pop() || v : v;
-      return short.length > 40 ? short.slice(0, 39) + '…' : short;
-    }
-  }
-  // fallback: first string value in args
-  for (const v of Object.values(args)) {
-    if (typeof v === 'string' && v.length > 0) {
-      return v.length > 40 ? v.slice(0, 39) + '…' : v;
-    }
-  }
-  return '';
-}
 
 function printTaskProgress(event) {
   if (!event || !event.type) {

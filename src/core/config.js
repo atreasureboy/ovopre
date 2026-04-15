@@ -7,7 +7,8 @@ const DEFAULT_CONFIG = {
   apiKey: '',
   temperature: 0.2,
   timeoutMs: 120000,
-  maxRetries: 2
+  maxRetries: 2,
+  compactionThreshold: 80000
 };
 
 export function getConfigDir(baseCwd = process.cwd()) {
@@ -101,6 +102,11 @@ export function resolveRuntimeConfig(fileConfig = {}) {
     parseNonNegativeInt(fileConfig.maxRetries) ??
     DEFAULT_CONFIG.maxRetries;
 
+  const compactionThreshold =
+    parsePositiveInt(process.env.OVOPRE_COMPACTION_THRESHOLD) ??
+    parsePositiveInt(fileConfig.compactionThreshold) ??
+    DEFAULT_CONFIG.compactionThreshold;
+
   return {
     baseURL,
     model,
@@ -108,6 +114,7 @@ export function resolveRuntimeConfig(fileConfig = {}) {
     temperature,
     timeoutMs,
     maxRetries,
+    compactionThreshold,
     _meta: {
       baseURLSource: pickSource(baseUrlFromEnv, fileConfig.baseURL, DEFAULT_CONFIG.baseURL, 'env', 'file', 'default'),
       modelSource: pickSource(envModel, fileConfig.model, inferredModel || DEFAULT_CONFIG.model, 'env', 'file', 'inferred'),

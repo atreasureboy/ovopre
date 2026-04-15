@@ -178,6 +178,34 @@ export function formatToolEnd(name, ok, durationMs, details = null) {
   return `    ${tick} ${C.brightBlack}${name}${C.reset}${timing}${prev}`;
 }
 
+// ─── Tool arg extraction ──────────────────────────────────────────────────────
+
+/**
+ * Extract the most meaningful argument from a tool call to show inline:
+ *   ⏺ read_file(README.md)  32ms
+ */
+export function extractPrimaryArg(name, args) {
+  if (!args || typeof args !== 'object') return '';
+  const candidates = [
+    args.path, args.file_path, args.filename, args.file,
+    args.command, args.cmd,
+    args.query, args.pattern,
+    args.url,
+  ];
+  for (const v of candidates) {
+    if (v && typeof v === 'string') {
+      const short = v.includes('/') ? v.split('/').filter(Boolean).pop() || v : v;
+      return short.length > 40 ? short.slice(0, 39) + '…' : short;
+    }
+  }
+  for (const v of Object.values(args)) {
+    if (typeof v === 'string' && v.length > 0) {
+      return v.length > 40 ? v.slice(0, 39) + '…' : v;
+    }
+  }
+  return '';
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function fmtDuration(ms) {
