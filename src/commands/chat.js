@@ -31,76 +31,20 @@ import {
   renderBanner,
 } from '../ui/terminal.js';
 
+// ─── Public commands ──────────────────────────────────────────────────────────
+
 export async function runOneShot(prompt, options = {}) {
   const config = await loadRuntimeConfig(options.cwd);
-  const enableTools = options.enableTools !== false;
-  const verboseUi = Boolean(options.verboseUi);
   const fmt = createFormatter(options.output);
   const messages = await buildBaseMessages(options.systemPrompt, options.mode || 'chat', options.cwd);
   messages.push({ role: 'user', content: prompt });
-  const uiState = { usage: null, toolCalls: 0, round: null };
-  const model = options.model || config.model;
-  const toolArgMap = new Map();
 
-  let streamStarted = false;
-  const handleToken = fmt.isJson || fmt.isPlain
-    ? undefined
-    : (token) => {
-        if (!streamStarted) {
-          process.stdout.write('\n');
-          streamStarted = true;
-        }
-        process.stdout.write(token);
-      };
-
-  const result = await runAgentCompletion({
-    config,
-    messages,
-    model: options.model,
-    temperature: options.temperature,
-    timeoutMs: options.timeoutMs,
-    maxRetries: options.maxRetries,
-    enableTools,
-    stream: options.stream !== false,
-    cwd: options.cwd,
-    maxToolRounds: options.maxToolRounds,
-    onToken: handleToken,
-    onRoundStart: fmt.isTerminal && verboseUi
-      ? (round) => {
-          uiState.round = round;
-          if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
-          console.log(formatStatusBar({ phase: 'reason', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round }));
-        }
-      : (round) => { uiState.round = round; },
-    onUsage: ({ delta, aggregate, round }) => {
-      uiState.usage = addUsage(uiState.usage, delta || aggregate);
-      uiState.round = round || uiState.round;
-      if (fmt.isTerminal && verboseUi && !streamStarted) {
-        console.log(formatStatusBar({ phase: 'llm', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round: uiState.round }));
-      }
-    },
-    onToolCallStart: fmt.isTerminal
-      ? ({ index, name, parsedArgs = {} }) => {
-          if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
-          uiState.toolCalls = index;
-          toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
-          if (verboseUi) console.log(formatToolStart(name, index));
-        }
-      : undefined,
-    onToolCallEnd: fmt.isTerminal
-      ? ({ name, ok, durationMs, output, index }) => {
-          if (verboseUi) {
-            console.log(formatToolEnd(name, ok, durationMs, { output }));
-          } else {
-            console.log(formatToolLine(name, ok, durationMs, toolArgMap.get(index) || ''));
-          }
-        }
-      : undefined
+  const { result, hadStreamOutput } = await runAgentTurn(messages, config, options, {
+    isTerminal: fmt.isTerminal,
+    verboseUi: Boolean(options.verboseUi),
   });
 
-  if (streamStarted) {
-    process.stdout.write('\n');
-  } else {
+  if (!hadStreamOutput) {
     fmt.result((result.text || '').trim(), result.usage);
   }
 }
@@ -120,9 +64,12 @@ export async function runTask(goal, options = {}) {
       mode: 'task',
       enableTools: options.enableTools !== false,
       quiet: true,
-      onStage: ({ stage }) => {
-        if (!fmt.isJson) {
-          console.log(formatStatusBar({ phase: `task:${stage}`, model, usage: state.usage, toolCalls: state.toolCalls, round: state.round }));
+      onStage: ({ stage, attempt, totalAttempts, failureCategory }) => {
+        if (fmt.isJson) return;
+        if (stage === 'plan') {
+          console.log(formatInfo('∙ planning'));
+        } else if (stage === 'retry') {
+          console.log(formatInfo(`∙ retrying (${attempt}/${totalAttempts})${failureCategory ? `  ${failureCategory}` : ''}`));
         }
       },
       onRoundStart: (round) => { state.round = round; },
@@ -137,338 +84,308 @@ export async function runTask(goal, options = {}) {
       onToolCallEnd: ({ name, ok, durationMs, index }) => {
         console.log(formatToolLine(name, ok, durationMs, toolArgMap.get(index) || ''));
       },
-      onProgress: printTaskProgress
-    }
+      onProgress: printTaskProgress,
+    },
   });
   fmt.taskResult(result.ok, result.summary, state.usage);
 }
 
 export async function runInteractiveChat(options = {}) {
   const config = await loadRuntimeConfig(options.cwd);
-  const enableTools = options.enableTools !== false;
-  const verboseUi = Boolean(options.verboseUi);
-  const planPreview = Boolean(options.planPreview);
   const sessionId = options.sessionId || 'default';
-  const history = options.noHistory ? [] : await loadSession(sessionId);
-  const baseMessages = await buildBaseMessages(options.systemPrompt, 'chat', options.cwd);
-  const messages = [...baseMessages, ...history];
+  const messages = [
+    ...(await buildBaseMessages(options.systemPrompt, 'chat', options.cwd)),
+    ...(options.noHistory ? [] : await loadSession(sessionId)),
+  ];
 
   const rl = readline.createInterface({ input, output, terminal: true });
-  console.log(
-    renderBanner({
-      model: options.model || config.model,
-      cwd: options.cwd || process.cwd()
-    })
-  );
-  console.log(formatInfo(`session=${sessionId} tools=${enableTools ? 'on' : 'off'} baseURL=${config.baseURL}`));
-  let exitRequested = false;
+  console.log(renderBanner({ model: options.model || config.model, cwd: options.cwd || process.cwd() }));
+  console.log(formatInfo(`session=${sessionId}  tools=${options.enableTools !== false ? 'on' : 'off'}  ${config.baseURL}`));
 
+  let exitRequested = false;
   try {
     while (true) {
-      let line = '';
-      try {
-        line = normalizeChatInput(await rl.question(promptUser()));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (message.toLowerCase().includes('readline was closed')) {
-          break;
-        }
-        throw error;
-      }
-      if (!line) {
-        continue;
-      }
-      const slash = parseSlashCommand(line);
-      if (slash?.name === 'exit' || slash?.name === 'quit') {
-        exitRequested = true;
-        break;
-      }
-      if (slash?.name === 'clear') {
-        messages.length = 0;
-        messages.push(...(await buildBaseMessages(options.systemPrompt, 'chat', options.cwd)));
-        console.log(formatSuccess('history cleared.'));
-        continue;
-      }
-      if (slash?.name === 'help') {
-        console.log(
-          formatInfo(
-            'commands: /help /clear /plan <goal> /status /usage [days] /session ... /plugins ... /skills ... /mcp ... /models ... /task <goal> /tasks ... /exit'
-          )
-        );
-        continue;
-      }
-      if (slash?.name === 'status') {
-        await runStatusCommand();
-        continue;
-      }
-      if (slash?.name === 'usage') {
-        const arg = slash.argsText;
-        await runCostCommand(arg ? [arg] : []);
-        continue;
-      }
-      if (slash?.name === 'session') {
-        const sub = slash.argsText;
-        await runSessionCommand(sub ? sub.split(/\s+/) : []);
-        continue;
-      }
-      if (slash?.name === 'plugins') {
-        const sub = slash.argsText;
-        await runPluginsCommand(sub ? sub.split(/\s+/) : []);
-        continue;
-      }
-      if (slash?.name === 'skills') {
-        const sub = slash.argsText;
-        await runSkillsCommand(sub ? sub.split(/\s+/) : []);
-        continue;
-      }
-      if (slash?.name === 'mcp') {
-        const sub = slash.argsText;
-        await runMcpCommand(sub ? sub.split(/\s+/) : []);
-        continue;
-      }
-      if (slash?.name === 'tasks') {
-        const sub = slash.argsText;
-        await runTasksCommand(sub ? sub.split(/\s+/) : []);
-        continue;
-      }
-      if (slash?.name === 'models') {
-        const sub = slash.argsText;
-        const args = sub ? sub.split(/\s+/) : [];
-        try {
-          await runModelsCommand(args);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.log(formatWarn(`models failed: ${message}`));
-        }
-        continue;
-      }
-      if (slash?.name === 'plan') {
-        const goal = slash.argsText;
-        if (!goal) {
-          console.log(formatWarn('usage: /plan <goal>'));
-          continue;
-        }
-        try {
-          const planned = await runQuickPlan(goal, options);
-          console.log(formatAssistant(planned));
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.log(formatWarn(`plan failed: ${message}`));
-        }
-        continue;
-      }
-      if (slash?.name === 'task') {
-        const goal = slash.argsText;
-        if (!goal) {
-          console.log(formatWarn('usage: /task <goal>'));
-          continue;
-        }
-        try {
-          await runTask(goal, options);
-        } catch (error) {
-          console.log(formatWarn(`task failed: ${String(error?.message || error)}`));
-        }
-        continue;
-      }
+      const line = await readLine(rl);
+      if (line === null) break; // readline closed (Ctrl+D / EOF)
+      if (!line) continue;
 
-      if (enableTools && planPreview) {
-        try {
-          const planned = await runQuickPlan(line, { ...options, temperature: 0 });
-          const planText = String(planned || '').trim();
-          if (planText) {
-            console.log(formatInfo('[plan]'));
-            console.log(planText);
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.log(formatWarn(`plan preview failed: ${message}`));
-        }
+      const cmd = parseSlashCommand(line);
+      if (cmd) {
+        const outcome = await handleSlashCommand(cmd, { messages, config, options });
+        if (outcome === 'exit') { exitRequested = true; break; }
+        continue;
       }
 
       messages.push({ role: 'user', content: line });
-      const uiState = { usage: null, toolCalls: 0, round: null };
-      const model = options.model || config.model;
-      if (verboseUi) {
-        console.log(formatStatusBar({ phase: 'thinking', model, usage: uiState.usage, toolCalls: uiState.toolCalls }));
-      }
-
       try {
-        let streamStarted = false;
-        const toolArgMap = new Map();
-
-        const handleToken = (token) => {
-          if (!streamStarted) {
-            process.stdout.write('\n');
-            streamStarted = true;
-          }
-          process.stdout.write(token);
-        };
-
-        const result = await runAgentCompletion({
-          config,
-          messages,
-          model: options.model,
-          temperature: options.temperature,
-          timeoutMs: options.timeoutMs,
-          maxRetries: options.maxRetries,
-          enableTools,
-          stream: options.stream !== false,
-          cwd: options.cwd,
-          maxToolRounds: options.maxToolRounds,
-          onToken: handleToken,
-          onRoundStart: (round) => {
-            uiState.round = round;
-            if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
-            if (verboseUi) {
-              console.log(formatStatusBar({ phase: 'reason', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round }));
-            }
-          },
-          onUsage: ({ delta, aggregate, round }) => {
-            uiState.usage = addUsage(uiState.usage, delta || aggregate);
-            uiState.round = round || uiState.round;
-            if (verboseUi && !streamStarted) {
-              console.log(formatStatusBar({ phase: 'llm', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round: uiState.round }));
-            }
-          },
-          onToolCallStart: ({ index, name, parsedArgs = {} }) => {
-            if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
-            uiState.toolCalls = index;
-            toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
-            if (verboseUi) console.log(formatToolStart(name, index));
-          },
-          onToolCallEnd: ({ name, ok, durationMs, output, index }) => {
-            if (verboseUi) {
-              console.log(formatToolEnd(name, ok, durationMs, { output }));
-            } else {
-              console.log(formatToolLine(name, ok, durationMs, toolArgMap.get(index) || ''));
-            }
-          },
-          onCompact: ({ round, summary }) => {
-            console.log(formatInfo(`[compact] context compressed before round ${round} (${summary ? summary.length : 0} chars summary)`));
-          }
-        });
-
-        // Close any in-progress streaming line
-        const hadStreamOutput = streamStarted;
-        if (streamStarted) {
-          process.stdout.write('\n');
-          streamStarted = false;
-        }
-        // Non-streaming, no-tools path: print the buffered response
-        if (!hadStreamOutput && result.text) {
-          console.log(formatAssistant((result.text || '').trim()));
-        }
-
-        const answer = (result.text || '').trim();
-        if (Array.isArray(result.messages) && result.messages.length) {
-          messages.length = 0;
-          messages.push(...result.messages);
-        } else {
-          messages.push({ role: 'assistant', content: answer });
-        }
-
-        // Cross-turn compaction: if the last prompt_tokens usage shows we're
-        // approaching the context limit, compact before the next user turn.
-        const lastPromptTokens = result.usage?.prompt_tokens || 0;
-        const compactionThreshold = config.compactionThreshold || 80000;
-        if (lastPromptTokens >= compactionThreshold) {
-          const compactResult = await maybeCompact(messages, config, {
-            currentTokens: lastPromptTokens,
-            compactionThreshold
-          });
-          if (compactResult.compacted) {
-            messages.length = 0;
-            messages.push(...compactResult.messages);
-            if (verboseUi) {
-              console.log(
-                formatInfo(
-                  `[compact] session history compressed (was ~${lastPromptTokens} tokens)`
-                )
-              );
-            }
-          }
-        }
-
-        if (!options.noHistory) {
-          const persist = messages.filter((m) => m.role !== 'system');
-          await saveSession(persist, sessionId);
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.log(formatWarn(`request failed: ${message}`));
+        await runTurnAndUpdateHistory(messages, config, options, sessionId);
+      } catch (err) {
+        console.log(formatWarn(`request failed: ${String(err?.message || err)}`));
       }
     }
   } finally {
     rl.close();
     input.pause();
     await resetMcpRuntime().catch(() => {});
-    // Extract memories from this session (fire-and-forget — never blocks exit)
-    const persist = messages.filter((m) => m.role !== 'system');
-    if (persist.length >= 4) {
-      extractAndSaveMemory(persist, config, {
-        sessionId,
-        cwd: options.cwd || process.cwd()
-      }).catch(() => {});
-    }
+    extractMemoriesOnExit(messages, config, options, sessionId);
   }
 
   return { exitRequested };
 }
 
+// ─── Core agent turn ──────────────────────────────────────────────────────────
+
+/**
+ * Run one agent completion round with streaming + tool display.
+ * Returns { result, hadStreamOutput } without writing the final newline caller
+ * decides how to handle non-streamed output.
+ */
+async function runAgentTurn(messages, config, options, { isTerminal, verboseUi }) {
+  const model = options.model || config.model;
+  const uiState = { usage: null, toolCalls: 0, round: null };
+  const toolArgMap = new Map();
+  let streamStarted = false;
+
+  const result = await runAgentCompletion({
+    config,
+    messages,
+    model: options.model,
+    temperature: options.temperature,
+    timeoutMs: options.timeoutMs,
+    maxRetries: options.maxRetries,
+    enableTools: options.enableTools !== false,
+    stream: options.stream !== false,
+    cwd: options.cwd,
+    maxToolRounds: options.maxToolRounds,
+    onToken: isTerminal ? (token) => {
+      if (!streamStarted) { process.stdout.write('\n'); streamStarted = true; }
+      process.stdout.write(token);
+    } : undefined,
+    onRoundStart: (round) => {
+      uiState.round = round;
+      if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
+      if (verboseUi && isTerminal) {
+        console.log(formatStatusBar({ phase: 'reason', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round }));
+      }
+    },
+    onUsage: ({ delta, aggregate, round }) => {
+      uiState.usage = addUsage(uiState.usage, delta || aggregate);
+      uiState.round = round || uiState.round;
+      if (verboseUi && isTerminal && !streamStarted) {
+        console.log(formatStatusBar({ phase: 'llm', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round: uiState.round }));
+      }
+    },
+    onToolCallStart: isTerminal ? ({ index, name, parsedArgs = {} }) => {
+      if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
+      uiState.toolCalls = index;
+      toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
+      if (verboseUi) console.log(formatToolStart(name, index));
+    } : undefined,
+    onToolCallEnd: isTerminal ? ({ name, ok, durationMs, output, index }) => {
+      if (verboseUi) {
+        console.log(formatToolEnd(name, ok, durationMs, { output }));
+      } else {
+        console.log(formatToolLine(name, ok, durationMs, toolArgMap.get(index) || ''));
+      }
+    } : undefined,
+    onCompact: isTerminal ? ({ round }) => {
+      console.log(formatInfo(`[compact] context compressed at round ${round}`));
+    } : undefined,
+  });
+
+  const hadStreamOutput = streamStarted;
+  if (streamStarted) process.stdout.write('\n');
+  return { result, hadStreamOutput };
+}
+
+// ─── Interactive loop helpers ─────────────────────────────────────────────────
+
+/** Read one trimmed line; returns null on EOF/close. */
+async function readLine(rl) {
+  try {
+    return normalizeChatInput(await rl.question(promptUser()));
+  } catch (err) {
+    if (String(err.message).toLowerCase().includes('readline was closed')) return null;
+    throw err;
+  }
+}
+
+/**
+ * Handle a slash command; returns:
+ *   'exit'    → break the chat loop
+ *   'handled' → continue the loop (command consumed)
+ *   null      → unknown command, fall through to AI
+ */
+async function handleSlashCommand(cmd, { messages, config, options }) {
+  const { name, argsText } = cmd;
+  const subArgs = argsText ? argsText.split(/\s+/) : [];
+
+  switch (name) {
+    case 'exit':
+    case 'quit':
+      return 'exit';
+
+    case 'clear':
+      messages.length = 0;
+      messages.push(...(await buildBaseMessages(options.systemPrompt, 'chat', options.cwd)));
+      console.log(formatSuccess('history cleared.'));
+      return 'handled';
+
+    case 'help':
+      console.log(formatInfo(
+        'commands: /help /clear /plan <goal> /status /usage [days] /session ... ' +
+        '/plugins ... /skills ... /mcp ... /models ... /tasks ... /exit'
+      ));
+      return 'handled';
+
+    case 'status':
+      await runStatusCommand();
+      return 'handled';
+
+    case 'usage':
+      await runCostCommand(argsText ? [argsText] : []);
+      return 'handled';
+
+    case 'session':
+      await runSessionCommand(subArgs);
+      return 'handled';
+
+    case 'plugins':
+      await runPluginsCommand(subArgs);
+      return 'handled';
+
+    case 'skills':
+      await runSkillsCommand(subArgs);
+      return 'handled';
+
+    case 'mcp':
+      await runMcpCommand(subArgs);
+      return 'handled';
+
+    case 'tasks':
+      await runTasksCommand(subArgs);
+      return 'handled';
+
+    case 'models':
+      try { await runModelsCommand(subArgs); }
+      catch (err) { console.log(formatWarn(`models: ${String(err?.message || err)}`)); }
+      return 'handled';
+
+    case 'plan':
+      if (!argsText) { console.log(formatWarn('usage: /plan <goal>')); return 'handled'; }
+      try {
+        const plan = await runQuickPlan(argsText, options);
+        if (plan) console.log(formatAssistant(plan));
+      } catch (err) {
+        console.log(formatWarn(`plan: ${String(err?.message || err)}`));
+      }
+      return 'handled';
+
+    default:
+      return null; // unrecognized → pass to AI
+  }
+}
+
+/** Execute one turn, update message history, run compaction, persist session. */
+async function runTurnAndUpdateHistory(messages, config, options, sessionId) {
+  const { result, hadStreamOutput } = await runAgentTurn(messages, config, options, {
+    isTerminal: true,
+    verboseUi: Boolean(options.verboseUi),
+  });
+
+  if (!hadStreamOutput && result.text) {
+    console.log(result.text.trim());
+  }
+
+  // Merge updated message history returned by the agent loop (includes tool turns)
+  if (Array.isArray(result.messages) && result.messages.length) {
+    messages.length = 0;
+    messages.push(...result.messages);
+  } else {
+    messages.push({ role: 'assistant', content: (result.text || '').trim() });
+  }
+
+  // Cross-turn compaction: run when we're near the context limit
+  const promptTokens = result.usage?.prompt_tokens || 0;
+  const threshold = config.compactionThreshold || 80000;
+  if (promptTokens >= threshold) {
+    const compact = await maybeCompact(messages, config, {
+      currentTokens: promptTokens,
+      compactionThreshold: threshold,
+    });
+    if (compact.compacted) {
+      messages.length = 0;
+      messages.push(...compact.messages);
+      if (options.verboseUi) {
+        console.log(formatInfo(`[compact] session compressed (was ~${promptTokens} tokens)`));
+      }
+    }
+  }
+
+  if (!options.noHistory) {
+    await saveSession(messages.filter((m) => m.role !== 'system'), sessionId);
+  }
+}
+
+function extractMemoriesOnExit(messages, config, options, sessionId) {
+  const persist = messages.filter((m) => m.role !== 'system');
+  if (persist.length >= 4) {
+    extractAndSaveMemory(persist, config, {
+      sessionId,
+      cwd: options.cwd || process.cwd(),
+    }).catch(() => {});
+  }
+}
+
+// ─── Base message builder ─────────────────────────────────────────────────────
+
 async function buildBaseMessages(systemPrompt, mode = 'chat', cwd = process.cwd()) {
-  const defaultPrompt =
-    mode === 'task'
-      ? [
-          'You are ovopre, an autonomous coding CLI agent.',
-          'Primary goal: complete the user task end-to-end.',
-          'You can call tools to inspect files, edit files, and run shell commands.',
-          'Work directly and efficiently. Do not ask for permission before tool usage.'
-        ].join(' ')
-      : [
-          'You are ovopre, a pragmatic coding CLI assistant.',
-          'In interactive chat mode, behave like a polished terminal coding agent.',
-          'Do the work silently when tools are needed, then report the outcome plainly.',
-          'Do not expose internal planning, hidden reasoning, tool names, task stages, verification checklists, or step-by-step execution unless the user explicitly asks for them.',
-          'Do not say you are planning, thinking, or about to use tools.',
-          'Do not be chatty, sarcastic, or mention that the user asked something before unless they explicitly ask about history.',
-          'If blocked, state the blocker directly and give the shortest useful next action.'
-        ].join(' ');
-  const prompt = systemPrompt || defaultPrompt;
+  const defaultPrompt = mode === 'task'
+    ? 'You are ovopre, an autonomous coding CLI agent. ' +
+      'Primary goal: complete the user task end-to-end. ' +
+      'You can call tools to inspect files, edit files, and run shell commands. ' +
+      'Work directly and efficiently. Do not ask for permission before tool usage.'
+    : 'You are ovopre, a pragmatic coding CLI assistant. ' +
+      'In interactive chat mode, behave like a polished terminal coding agent. ' +
+      'When a request requires tool use or file changes, open with one concise line ' +
+      'stating your approach (e.g. "Reading auth module then patching the handler."), ' +
+      'then execute directly without further commentary. ' +
+      'For simple questions or explanations, answer directly without any preamble. ' +
+      'Report outcomes concisely: changed files, what changed, why it satisfies the goal. ' +
+      'Do not be chatty or pad responses. ' +
+      'If blocked, state the blocker and give the shortest useful next action.';
 
   const [skillsAddendum, memoriesAddendum] = await Promise.all([
     buildSkillsSystemAddendum(cwd),
-    loadMemoriesForPrompt(cwd).catch(() => '') // memory loading never blocks startup
+    loadMemoriesForPrompt(cwd).catch(() => ''),
   ]);
 
-  const parts = [prompt];
-  if (skillsAddendum) parts.push(skillsAddendum);
-  if (memoriesAddendum) parts.push(memoriesAddendum);
-
+  const parts = [systemPrompt || defaultPrompt, skillsAddendum, memoriesAddendum].filter(Boolean);
   return [{ role: 'system', content: parts.join('\n\n') }];
 }
+
+// ─── Quick plan (used by /plan) ──────────────────────────────────────────────
 
 async function runQuickPlan(goal, options = {}) {
   const config = await loadRuntimeConfig(options.cwd);
   const skillsAddendum = await buildSkillsSystemAddendum(options.cwd || process.cwd());
-  const prompt = [
-    `Task goal:\n${goal}`,
-    'Create a concise implementation plan with sections:',
-    '1) Files to inspect/edit',
-    '2) Concrete steps',
-    '3) Verification commands (shell)',
-    'Be specific and executable.'
-  ].join('\n\n');
+  const systemContent = [
+    'You are a senior coding planner. Output practical plans.',
+    skillsAddendum,
+  ].filter(Boolean).join('\n\n');
 
   const result = await runAgentCompletion({
     config,
     messages: [
-      {
-        role: 'system',
-        content: skillsAddendum
-          ? `You are a senior coding planner. Output practical plans.\n\n${skillsAddendum}`
-          : 'You are a senior coding planner. Output practical plans.'
-      },
-      { role: 'user', content: prompt }
+      { role: 'system', content: systemContent },
+      { role: 'user', content: [
+        `Task goal:\n${goal}`,
+        'Create a concise implementation plan with sections:',
+        '1) Files to inspect/edit',
+        '2) Concrete steps',
+        '3) Verification commands (shell)',
+        'Be specific and executable.',
+      ].join('\n\n') },
     ],
     model: options.model,
     temperature: options.temperature,
@@ -476,86 +393,66 @@ async function runQuickPlan(goal, options = {}) {
     maxRetries: options.maxRetries,
     enableTools: false,
     stream: false,
-    cwd: options.cwd
+    cwd: options.cwd,
   });
   return String(result.text || '').trim();
 }
 
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
 function addUsage(current, extra) {
-  if (!extra) {
-    return current || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-  }
   const base = current || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  if (!extra) return base;
   return {
-    prompt_tokens: Number(base.prompt_tokens || 0) + Number(extra.prompt_tokens || 0),
-    completion_tokens: Number(base.completion_tokens || 0) + Number(extra.completion_tokens || 0),
-    total_tokens: Number(base.total_tokens || 0) + Number(extra.total_tokens || 0)
+    prompt_tokens: (base.prompt_tokens || 0) + (extra.prompt_tokens || 0),
+    completion_tokens: (base.completion_tokens || 0) + (extra.completion_tokens || 0),
+    total_tokens: (base.total_tokens || 0) + (extra.total_tokens || 0),
   };
 }
 
-
 function printTaskProgress(event) {
-  if (!event || !event.type) {
-    return;
-  }
-
-  if (event.type === 'plan') {
-    const text = String(event.text || '').trim();
-    if (!text) {
-      return;
+  if (!event?.type) return;
+  switch (event.type) {
+    case 'plan': {
+      const text = String(event.text || '').trim();
+      if (text) { console.log(formatInfo('[plan]')); console.log(text); }
+      break;
     }
-    console.log(formatInfo('[plan]'));
-    console.log(text);
-    return;
-  }
-
-  if (event.type === 'attempt_start') {
-    console.log(formatInfo(`[progress] attempt ${event.attempt}/${event.totalAttempts}`));
-    return;
-  }
-
-  if (event.type === 'verify') {
-    if (event.passed) {
-      console.log(formatSuccess(`[verify] passed in round ${event.rounds}`));
-      return;
+    case 'attempt_start':
+      console.log(formatInfo(`[progress] attempt ${event.attempt}/${event.totalAttempts}`));
+      break;
+    case 'verify':
+      if (event.passed) {
+        console.log(formatSuccess(`[verify] passed in round ${event.rounds}`));
+      } else {
+        const failed = (event.failedCommands || []).filter(Boolean).join(' | ');
+        console.log(formatWarn(`[verify] failed (${event.failureCategory || 'unknown'})${failed ? ` — ${failed}` : ''}`));
+      }
+      break;
+    case 'retry': {
+      const detail = String(event.failureDetail || '').split('\n')[0].slice(0, 140);
+      console.log(formatWarn(
+        `[retry] ${event.attempt}/${event.totalAttempts}` +
+        (detail ? `, reason: ${detail}` : '')
+      ));
+      break;
     }
-    const failed = Array.isArray(event.failedCommands) ? event.failedCommands.filter(Boolean) : [];
-    const suffix = failed.length ? ` failed: ${failed.join(' | ')}` : '';
-    console.log(formatWarn(`[verify] failed (${event.failureCategory || 'unknown'})${suffix}`));
-    return;
-  }
-
-  if (event.type === 'retry') {
-    const detail = String(event.failureDetail || '').split('\n')[0].slice(0, 140);
-    const more = detail ? `, reason: ${detail}` : '';
-    console.log(
-      formatWarn(
-        `[retry] ${event.attempt}/${event.totalAttempts}, next ${event.nextAttempt}/${event.totalAttempts}${more}`
-      )
-    );
   }
 }
 
 function normalizeChatInput(value) {
   return String(value || '')
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '') // strip zero-width chars
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function parseSlashCommand(line) {
-  const normalized = normalizeChatInput(line);
-  if (!normalized.startsWith('/')) {
-    return null;
-  }
-
-  const match = /^\/([^\s]+)(?:\s+(.*))?$/u.exec(normalized);
-  if (!match) {
-    return null;
-  }
-
+  if (!line.startsWith('/')) return null;
+  const match = /^\/([^\s]+)(?:\s+(.*))?$/u.exec(line);
+  if (!match) return null;
   return {
-    name: String(match[1] || '').toLowerCase(),
-    argsText: String(match[2] || '').trim()
+    name: match[1].toLowerCase(),
+    argsText: (match[2] || '').trim(),
   };
 }

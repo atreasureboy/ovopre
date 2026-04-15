@@ -54,7 +54,7 @@ export function renderBanner({ model, cwd, stream = process.stdout }) {
   const mod   = `${C.green}${modelTag}${C.reset}`;
   const proj  = `${C.brightBlack}${project}${C.reset}`;
   const sep   = `${C.brightBlack}${'─'.repeat(width)}${C.reset}`;
-  const hint  = `${C.brightBlack}  /help  /plan  /clear  /status  /task  /exit${C.reset}`;
+  const hint  = `${C.brightBlack}  /help  /plan <goal>  /clear  /status  /exit${C.reset}`;
 
   return ['', `  ${logo}  ${mod}  ${proj}`, `  ${sep}`, hint].join('\n');
 }

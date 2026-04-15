@@ -206,22 +206,11 @@ async function runPlanningStage({ goal, config, options, skillsAddendum }) {
     config,
     messages: [
       { role: 'system', content: mergeSystem('You are a senior coding planner. Output practical plans.', skillsAddendum) },
-      { role: 'user', content: prompt }
+      { role: 'user', content: prompt },
     ],
-    model: options.model,
-    temperature: options.temperature,
-    timeoutMs: options.timeoutMs,
-    maxRetries: options.maxRetries,
-    enableTools: false,
-    stream: false,
-    cwd: options.cwd,
-    onUsage: options.onUsage
+    ...stageOpts(options),
   });
-
-  return {
-    text: (result.text || '').trim(),
-    usage: result.usage || null
-  };
+  return { text: (result.text || '').trim(), usage: result.usage || null };
 }
 
 async function runExecuteStage({ goal, plan, lastFailure, config, options, skillsAddendum, mutationStore }) {
@@ -247,30 +236,20 @@ async function runExecuteStage({ goal, plan, lastFailure, config, options, skill
         content: mergeSystem(
           'You are ovopre execution engine. Use tools aggressively to complete the task. Prefer apply_patch for precise multi-file edits.',
           skillsAddendum
-        )
+        ),
       },
-      { role: 'user', content: execPrompt }
+      { role: 'user', content: execPrompt },
     ],
-    model: options.model,
-    temperature: options.temperature,
-    timeoutMs: options.timeoutMs,
-    maxRetries: options.maxRetries,
-    enableTools: options.enableTools !== false,
-    stream: false,
-    maxToolRounds: options.maxToolRounds,
-    cwd: options.cwd,
-    toolContext: { mutationStore },
-    onUsage: options.onUsage,
-    onToolCallStart: options.onToolCallStart,
-    onToolCallEnd: options.onToolCallEnd,
-    onRoundStart: options.onRoundStart
+    ...stageOpts(options, {
+      enableTools: options.enableTools !== false,
+      maxToolRounds: options.maxToolRounds,
+      toolContext: { mutationStore },
+      onToolCallStart: options.onToolCallStart,
+      onToolCallEnd: options.onToolCallEnd,
+      onRoundStart: options.onRoundStart,
+    }),
   });
-
-  return {
-    text: (result.text || '').trim(),
-    usage: result.usage || null,
-    toolCalls: result.toolCalls || 0
-  };
+  return { text: (result.text || '').trim(), usage: result.usage || null, toolCalls: result.toolCalls || 0 };
 }
 
 async function runVerifyStage({ goal, plan, execution, config, options, verifyRounds, skillsAddendum }) {
@@ -294,16 +273,9 @@ async function runVerifyStage({ goal, plan, execution, config, options, verifyRo
       config,
       messages: [
         { role: 'system', content: mergeSystem('You output shell verification commands only.', skillsAddendum) },
-        { role: 'user', content: verifyPrompt }
+        { role: 'user', content: verifyPrompt },
       ],
-      model: options.model,
-      temperature: 0,
-      timeoutMs: options.timeoutMs,
-      maxRetries: options.maxRetries,
-      enableTools: false,
-      stream: false,
-      cwd: options.cwd,
-      onUsage: options.onUsage
+      ...stageOpts(options, { temperature: 0 }),
     });
 
     const commands = parseVerifyCommands(verifyPlan.text || '');
@@ -384,16 +356,9 @@ async function runSummarizeStage({
     config,
     messages: [
       { role: 'system', content: mergeSystem('You are a release summarizer for coding tasks.', skillsAddendum) },
-      { role: 'user', content: prompt }
+      { role: 'user', content: prompt },
     ],
-    model: options.model,
-    temperature: options.temperature,
-    timeoutMs: options.timeoutMs,
-    maxRetries: options.maxRetries,
-    enableTools: false,
-    stream: false,
-    cwd: options.cwd,
-    onUsage: options.onUsage
+    ...stageOpts(options),
   });
 
   await trace.event('summary_stats', {
@@ -456,6 +421,24 @@ function classifyFailures(failedResults) {
 
 function mergeSystem(base, addendum) {
   return addendum ? `${base}\n\n${addendum}` : base;
+}
+
+/**
+ * Build the common runAgentCompletion options forwarded from task options.
+ * Pass `overrides` to selectively replace defaults (e.g. enableTools, temperature).
+ */
+function stageOpts(options, overrides = {}) {
+  return {
+    model: options.model,
+    temperature: options.temperature,
+    timeoutMs: options.timeoutMs,
+    maxRetries: options.maxRetries,
+    cwd: options.cwd,
+    enableTools: false,
+    stream: false,
+    onUsage: options.onUsage,
+    ...overrides,
+  };
 }
 
 function emitStage(options, payload) {
