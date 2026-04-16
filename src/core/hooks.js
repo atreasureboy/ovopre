@@ -92,9 +92,7 @@ export function runPostToolHooks(toolName, result, baseCwd = process.cwd()) {
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 function normalizeHookList(raw) {
-  if (!raw) return [];
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(Boolean);
+  return Array.isArray(raw) ? raw.filter(Boolean) : [];
 }
 
 function resolveHookCommand(hook) {

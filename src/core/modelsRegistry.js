@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getConfigDir } from './config.js';
+import { fetchWithRetry, normalizeBaseURL } from './httpClient.js';
 
 const DEFAULT_TTL_MS = 12 * 60 * 60 * 1000;
 
@@ -91,8 +92,9 @@ async function fetchModelsFromRemote({ baseURL, apiKey, timeoutMs, maxRetries })
     throw new Error('Missing API key. Set OPENAI_API_KEY or run: ovopre config init --api-key <key>');
   }
   const url = `${normalizeBaseURL(baseURL)}/models`;
-  const response = await requestWithRetry(url, {
-    apiKey,
+  const response = await fetchWithRetry(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${apiKey}` },
     timeoutMs,
     maxRetries
   });
@@ -106,59 +108,4 @@ async function fetchModelsFromRemote({ baseURL, apiKey, timeoutMs, maxRetries })
     }))
     .filter((x) => x.id)
     .sort((a, b) => a.id.localeCompare(b.id));
-}
-
-async function requestWithRetry(url, { apiKey, timeoutMs, maxRetries }) {
-  let lastError;
-  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${apiKey}`
-        },
-        signal: controller.signal
-      });
-      clearTimeout(timer);
-      if (response.ok) {
-        return response;
-      }
-      const text = await response.text();
-      const err = new Error(`API ${response.status}: ${text}`);
-      const retryable = response.status === 429 || response.status >= 500;
-      if (!retryable || attempt === maxRetries) {
-        throw err;
-      }
-      lastError = err;
-      await sleep(backoffMs(attempt));
-    } catch (error) {
-      clearTimeout(timer);
-      const message = error instanceof Error ? error.message : String(error);
-      const isAbort = error && typeof error === 'object' && 'name' in error && error.name === 'AbortError';
-      const wrapped = new Error(
-        isAbort ? `Request timeout after ${timeoutMs}ms calling ${url}` : `Network error calling ${url}: ${message}`
-      );
-      if (attempt === maxRetries) {
-        throw wrapped;
-      }
-      lastError = wrapped;
-      await sleep(backoffMs(attempt));
-    }
-  }
-  throw lastError || new Error('Unknown API request failure');
-}
-
-function normalizeBaseURL(baseURL) {
-  const normalized = String(baseURL || '').endsWith('/') ? String(baseURL).slice(0, -1) : String(baseURL || '');
-  return normalized.endsWith('/v1') ? normalized : `${normalized}/v1`;
-}
-
-function backoffMs(attempt) {
-  return Math.min(8000, 500 * (2 ** attempt));
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

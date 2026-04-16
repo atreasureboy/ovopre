@@ -273,16 +273,17 @@ function buildActiveToolList(coreToolDefs, dynamicTools) {
   return extra.length ? [...coreToolDefs, ...extra] : coreToolDefs;
 }
 
-function emptyUsage() {
+export function emptyUsage() {
   return { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 }
 
-function mergeUsage(base, extra) {
-  if (!extra) return base;
+export function mergeUsage(base, extra) {
+  const b = base || emptyUsage();
+  if (!extra) return b;
   return {
-    prompt_tokens: Number(base.prompt_tokens || 0) + Number(extra.prompt_tokens || 0),
-    completion_tokens: Number(base.completion_tokens || 0) + Number(extra.completion_tokens || 0),
-    total_tokens: Number(base.total_tokens || 0) + Number(extra.total_tokens || 0)
+    prompt_tokens: Number(b.prompt_tokens || 0) + Number(extra.prompt_tokens || 0),
+    completion_tokens: Number(b.completion_tokens || 0) + Number(extra.completion_tokens || 0),
+    total_tokens: Number(b.total_tokens || 0) + Number(extra.total_tokens || 0)
   };
 }
 

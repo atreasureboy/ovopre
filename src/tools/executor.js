@@ -373,17 +373,7 @@ async function walkFiles(root, limit) {
 }
 
 function countMatches(content, search) {
-  let idx = 0;
-  let count = 0;
-  while (true) {
-    const next = content.indexOf(search, idx);
-    if (next === -1) {
-      break;
-    }
-    count += 1;
-    idx = next + Math.max(1, search.length);
-  }
-  return count;
+  return content.split(search).length - 1;
 }
 
 function runApplyPatch(patch, cwd) {
@@ -766,7 +756,7 @@ async function readMcpResourceTool(args, options) {
 
 function parsePatchTouchedFiles(patch, cwd) {
   const files = new Set();
-  const lines = String(patch || '').split('\\n');
+  const lines = String(patch || '').split('\n');
   for (const line of lines) {
     if (line.startsWith('*** Update File: ') || line.startsWith('*** Add File: ') || line.startsWith('*** Delete File: ')) {
       const raw = line.split(': ')[1]?.trim();

@@ -1,4 +1,4 @@
-import { loadRuntimeConfig, saveFileConfig } from '../core/config.js';
+import { loadRuntimeConfig, saveFileConfig, parsePositiveInt } from '../core/config.js';
 import { getModelsCachePath, listAvailableModels, loadModelsCache } from '../core/modelsRegistry.js';
 
 export async function runModelsCommand(args) {
@@ -56,9 +56,3 @@ export async function runModelsCommand(args) {
   }
 }
 
-function parsePositiveInt(raw) {
-  if (!raw) return undefined;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return undefined;
-  return Math.floor(n);
-}

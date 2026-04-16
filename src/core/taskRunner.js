@@ -2,6 +2,7 @@ import { runAgentCompletion } from './agentLoop.js';
 import { executeToolCall } from '../tools/executor.js';
 import { buildSkillsSystemAddendum } from '../skills/loader.js';
 import { createTaskTrace } from '../observability/taskTrace.js';
+import { parseNonNegativeInt } from './config.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -472,16 +473,7 @@ function logTask(text, options) {
   }
 }
 
-function normalizeInt(value, fallback) {
-  if (value === undefined || value === null) {
-    return fallback;
-  }
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0) {
-    return fallback;
-  }
-  return Math.floor(n);
-}
+const normalizeInt = (value, fallback) => parseNonNegativeInt(value) ?? fallback;
 
 async function rollbackMutations(mutationStore) {
   if (!mutationStore || mutationStore.size === 0) {

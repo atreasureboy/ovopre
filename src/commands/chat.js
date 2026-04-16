@@ -2,7 +2,7 @@ import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { loadRuntimeConfig } from '../core/config.js';
 import { loadSession, saveSession } from '../core/sessionStore.js';
-import { runAgentCompletion } from '../core/agentLoop.js';
+import { runAgentCompletion, mergeUsage } from '../core/agentLoop.js';
 import { maybeCompact } from '../core/compaction.js';
 import { extractAndSaveMemory, loadMemoriesForPrompt } from '../services/memoryExtractor.js';
 import { createFormatter } from '../outputStyles/index.js';
@@ -74,7 +74,7 @@ export async function runTask(goal, options = {}) {
       },
       onRoundStart: (round) => { state.round = round; },
       onUsage: ({ delta, aggregate, round }) => {
-        state.usage = addUsage(state.usage, delta || aggregate);
+        state.usage = mergeUsage(state.usage, delta || aggregate);
         state.round = round || state.round;
       },
       onToolCallStart: ({ index, name, parsedArgs = {} }) => {
@@ -171,7 +171,7 @@ async function runAgentTurn(messages, config, options, { isTerminal, verboseUi }
       }
     },
     onUsage: ({ delta, aggregate, round }) => {
-      uiState.usage = addUsage(uiState.usage, delta || aggregate);
+      uiState.usage = mergeUsage(uiState.usage, delta || aggregate);
       uiState.round = round || uiState.round;
       if (verboseUi && isTerminal && !streamStarted) {
         console.log(formatStatusBar({ phase: 'llm', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round: uiState.round }));
@@ -277,7 +277,7 @@ async function handleSlashCommand(cmd, { messages, config, options }) {
     case 'plan':
       if (!argsText) { console.log(formatWarn('usage: /plan <goal>')); return 'handled'; }
       try {
-        const plan = await runQuickPlan(argsText, options);
+        const plan = await runQuickPlan(argsText, config, options);
         if (plan) console.log(formatAssistant(plan));
       } catch (err) {
         console.log(formatWarn(`plan: ${String(err?.message || err)}`));
@@ -376,8 +376,7 @@ async function buildBaseMessages(systemPrompt, mode = 'chat', cwd = process.cwd(
 
 // ─── Quick plan (used by /plan) ──────────────────────────────────────────────
 
-async function runQuickPlan(goal, options = {}) {
-  const config = await loadRuntimeConfig(options.cwd);
+async function runQuickPlan(goal, config, options = {}) {
   const skillsAddendum = await buildSkillsSystemAddendum(options.cwd || process.cwd());
   const systemContent = [
     'You are a senior coding planner. Output practical plans.',
@@ -415,16 +414,6 @@ const INTERNAL_TOOLS = new Set(['enter_plan_mode', 'exit_plan_mode', 'tool_searc
 
 function isInternalTool(name) {
   return INTERNAL_TOOLS.has(String(name).toLowerCase());
-}
-
-function addUsage(current, extra) {
-  const base = current || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-  if (!extra) return base;
-  return {
-    prompt_tokens: (base.prompt_tokens || 0) + (extra.prompt_tokens || 0),
-    completion_tokens: (base.completion_tokens || 0) + (extra.completion_tokens || 0),
-    total_tokens: (base.total_tokens || 0) + (extra.total_tokens || 0),
-  };
 }
 
 function printTaskProgress(event) {

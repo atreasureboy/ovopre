@@ -1,4 +1,5 @@
 import { parseArgs, hasFlag, getFlagValue } from './utils/args.js';
+import { parsePositiveInt, parseNonNegativeInt } from './core/config.js';
 import { runConfigCommand } from './commands/config.js';
 import { runInteractiveChat, runOneShot, runTask } from './commands/chat.js';
 import { runSessionCommand } from './commands/session.js';
@@ -258,8 +259,8 @@ export async function runCli(argv) {
     sessionId: getFlagValue(flags, '--session'),
     systemPrompt: getFlagValue(flags, '--system'),
     noHistory: hasFlag(flags, '--no-history'),
-    enableTools: hasFlag(flags, '--no-tools') ? false : true,
-    stream: hasFlag(flags, '--no-stream') ? false : true,
+    enableTools: !hasFlag(flags, '--no-tools'),
+    stream: !hasFlag(flags, '--no-stream'),
     verboseUi: hasFlag(flags, '--verbose-ui'),
     planPreview: hasFlag(flags, '--plan-preview'),
     cwd: getFlagValue(flags, '--cwd') || process.cwd(),
@@ -301,35 +302,12 @@ export async function runCli(argv) {
   console.log(HELP_TEXT);
 }
 
-function normalizePositiveInt(raw, fallback) {
-  if (raw === undefined) {
-    return fallback;
-  }
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
-    return fallback;
-  }
-  return Math.floor(n);
-}
-
-function normalizeNonNegativeInt(raw, fallback) {
-  if (raw === undefined) {
-    return fallback;
-  }
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) {
-    return fallback;
-  }
-  return Math.floor(n);
-}
+// Wrappers that return `fallback` instead of undefined, delegating validation to config parsers.
+const normalizePositiveInt = (raw, fallback) => parsePositiveInt(raw) ?? fallback;
+const normalizeNonNegativeInt = (raw, fallback) => parseNonNegativeInt(raw) ?? fallback;
 
 function parseOptionalNumber(raw) {
-  if (raw === undefined) {
-    return undefined;
-  }
+  if (raw === undefined) return undefined;
   const n = Number(raw);
-  if (!Number.isFinite(n)) {
-    return undefined;
-  }
-  return n;
+  return Number.isFinite(n) ? n : undefined;
 }

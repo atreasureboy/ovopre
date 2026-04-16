@@ -29,11 +29,6 @@ function c(text, ...codes) {
   return codes.join('') + text + C.reset;
 }
 
-function cs(text, ...codes) {
-  // stream-aware version (for banner which uses a stream param)
-  return (stream) => hasColor(stream) ? codes.join('') + text + C.reset : text;
-}
-
 // ─── Banner ───────────────────────────────────────────────────────────────────
 
 export function renderBanner({ model, cwd, stream = process.stdout }) {
@@ -64,14 +59,6 @@ export function renderBanner({ model, cwd, stream = process.stdout }) {
 export function promptUser() {
   if (!hasColor()) return '> ';
   return `${C.brightBlue}${C.bold}>${C.reset} `;
-}
-
-/** Returns the prefix string that precedes a streamed assistant response. */
-export function formatAssistantPrefix() {
-  // Intentionally empty — response text flows without a label so the terminal
-  // looks clean. A blank line before the first token (added in chat.js) gives
-  // enough visual separation.
-  return '';
 }
 
 /** Used for non-streaming (buffered) responses — adds a subtle label. */

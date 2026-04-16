@@ -188,7 +188,7 @@ function inferDefaultModel(baseURL) {
   return undefined;
 }
 
-function parsePositiveInt(value) {
+export function parsePositiveInt(value) {
   if (value === undefined || value === null || value === '') {
     return undefined;
   }
@@ -199,7 +199,7 @@ function parsePositiveInt(value) {
   return Math.floor(n);
 }
 
-function parseNonNegativeInt(value) {
+export function parseNonNegativeInt(value) {
   if (value === undefined || value === null || value === '') {
     return undefined;
   }
