@@ -18,10 +18,13 @@ import { runSkillsCommand } from './skills.js';
 import { runMcpCommand } from './mcp.js';
 import { runTasksCommand } from './tasks.js';
 import {
+  createSpinner,
   extractPrimaryArg,
   formatAssistant,
   formatAssistantHeader,
+  formatDivider,
   formatInfo,
+  formatSessionLine,
   formatStatusBar,
   formatSuccess,
   formatToolEnd,
@@ -104,7 +107,7 @@ export async function runInteractiveChat(options = {}) {
 
   const rl = readline.createInterface({ input, output, terminal: true });
   console.log(renderBanner({ model: options.model || config.model, cwd: options.cwd || process.cwd() }));
-  console.log(formatInfo(`session=${sessionId}  tools=${options.enableTools !== false ? 'on' : 'off'}  ${config.baseURL}`));
+  console.log(formatSessionLine(sessionId, options.enableTools !== false, config.baseURL));
 
   let exitRequested = false;
   try {
@@ -152,58 +155,83 @@ async function runAgentTurn(messages, config, options, { isTerminal, verboseUi }
   const uiState = { usage: null, toolCalls: 0, round: null };
   const toolArgMap = new Map();
   let streamStarted = false;
+  let outputHeaderShown = false;
 
-  const result = await runAgentCompletion({
-    config,
-    messages,
-    model: options.model,
-    temperature: options.temperature,
-    timeoutMs: options.timeoutMs,
-    maxRetries: options.maxRetries,
-    enableTools: options.enableTools !== false,
-    stream: options.stream !== false,
-    cwd: options.cwd,
-    maxToolRounds: options.maxToolRounds,
-    onToken: isTerminal ? (token) => {
-      if (!streamStarted) { process.stdout.write(formatAssistantHeader()); streamStarted = true; }
-      process.stdout.write(token);
-    } : undefined,
-    onRoundStart: (round) => {
-      uiState.round = round;
-      if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
-      if (verboseUi && isTerminal) {
-        console.log(formatStatusBar({ phase: 'reason', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round }));
-      }
-    },
-    onUsage: ({ delta, aggregate, round }) => {
-      uiState.usage = mergeUsage(uiState.usage, delta || aggregate);
-      uiState.round = round || uiState.round;
-      if (verboseUi && isTerminal && !streamStarted) {
-        console.log(formatStatusBar({ phase: 'llm', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round: uiState.round }));
-      }
-    },
-    onToolCallStart: isTerminal ? ({ index, name, parsedArgs = {} }) => {
-      if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
-      uiState.toolCalls = index;
-      toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
-      if (verboseUi && !isInternalTool(name)) console.log(formatToolStart(name, index));
-    } : undefined,
-    onToolCallEnd: isTerminal ? ({ name, ok, durationMs, output, index }) => {
-      if (isInternalTool(name)) return;
-      if (verboseUi) {
-        console.log(formatToolEnd(name, ok, durationMs, { output }));
-      } else {
-        console.log(formatToolLine(name, ok, durationMs, toolArgMap.get(index) || ''));
-      }
-    } : undefined,
-    onCompact: isTerminal ? ({ round }) => {
-      console.log(formatInfo(`[compact] context compressed at round ${round}`));
-    } : undefined,
-  });
+  const spinner = isTerminal ? createSpinner() : null;
 
-  const hadStreamOutput = streamStarted;
-  if (streamStarted) process.stdout.write('\n');
-  return { result, hadStreamOutput };
+  try {
+    const result = await runAgentCompletion({
+      config,
+      messages,
+      model: options.model,
+      temperature: options.temperature,
+      timeoutMs: options.timeoutMs,
+      maxRetries: options.maxRetries,
+      enableTools: options.enableTools !== false,
+      stream: options.stream !== false,
+      cwd: options.cwd,
+      maxToolRounds: options.maxToolRounds,
+      onToken: isTerminal ? (token) => {
+        spinner?.stop();
+        if (!outputHeaderShown) {
+          process.stdout.write(formatAssistantHeader());
+          outputHeaderShown = true;
+        }
+        if (!streamStarted) streamStarted = true;
+        process.stdout.write(token);
+      } : undefined,
+      onRoundStart: (round) => {
+        uiState.round = round;
+        if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
+        if (isTerminal) {
+          spinner?.stop();
+          spinner?.start(round === 1 ? 'THINKING' : `ANALYZING  r${round}`);
+        }
+        if (verboseUi && isTerminal) {
+          spinner?.stop();
+          console.log(formatStatusBar({ phase: 'reason', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round }));
+        }
+      },
+      onUsage: ({ delta, aggregate, round }) => {
+        uiState.usage = mergeUsage(uiState.usage, delta || aggregate);
+        uiState.round = round || uiState.round;
+        if (verboseUi && isTerminal && !streamStarted) {
+          spinner?.stop();
+          console.log(formatStatusBar({ phase: 'llm', model, usage: uiState.usage, toolCalls: uiState.toolCalls, round: uiState.round }));
+        }
+      },
+      onToolCallStart: isTerminal ? ({ index, name, parsedArgs = {} }) => {
+        if (streamStarted) { process.stdout.write('\n'); streamStarted = false; }
+        spinner?.stop();
+        uiState.toolCalls = index;
+        toolArgMap.set(index, extractPrimaryArg(name, parsedArgs));
+        if (!isInternalTool(name)) {
+          const arg = extractPrimaryArg(name, parsedArgs);
+          spinner?.start(`${name}${arg ? `  ${arg}` : ''}`);
+        }
+        if (verboseUi && !isInternalTool(name)) console.log(formatToolStart(name, index));
+      } : undefined,
+      onToolCallEnd: isTerminal ? ({ name, ok, durationMs, output, index }) => {
+        spinner?.stop();
+        if (isInternalTool(name)) return;
+        if (verboseUi) {
+          console.log(formatToolEnd(name, ok, durationMs, { output }));
+        } else {
+          console.log(formatToolLine(name, ok, durationMs, toolArgMap.get(index) || ''));
+        }
+      } : undefined,
+      onCompact: isTerminal ? ({ round }) => {
+        spinner?.stop();
+        console.log(formatInfo(`${formatDivider('COMPACT')}  context compressed at round ${round}`));
+      } : undefined,
+    });
+
+    const hadStreamOutput = streamStarted;
+    if (streamStarted) process.stdout.write('\n');
+    return { result, hadStreamOutput };
+  } finally {
+    spinner?.stop();
+  }
 }
 
 // ─── Interactive loop helpers ─────────────────────────────────────────────────
@@ -429,25 +457,25 @@ function printTaskProgress(event) {
   switch (event.type) {
     case 'plan': {
       const text = String(event.text || '').trim();
-      if (text) { console.log(formatInfo('[plan]')); console.log(text); }
+      if (text) { console.log(formatDivider('PLAN')); console.log(text); }
       break;
     }
     case 'attempt_start':
-      console.log(formatInfo(`[progress] attempt ${event.attempt}/${event.totalAttempts}`));
+      console.log(formatDivider(`ATTEMPT ${event.attempt}/${event.totalAttempts}`));
       break;
     case 'verify':
       if (event.passed) {
-        console.log(formatSuccess(`[verify] passed in round ${event.rounds}`));
+        console.log(formatSuccess(`  ✔  VERIFY  passed in round ${event.rounds}`));
       } else {
-        const failed = (event.failedCommands || []).filter(Boolean).join(' | ');
-        console.log(formatWarn(`[verify] failed (${event.failureCategory || 'unknown'})${failed ? ` — ${failed}` : ''}`));
+        const failed = (event.failedCommands || []).filter(Boolean).join(' │ ');
+        console.log(formatWarn(`  ✘  VERIFY  failed (${event.failureCategory || 'unknown'})${failed ? `\n     ${failed}` : ''}`));
       }
       break;
     case 'retry': {
       const detail = String(event.failureDetail || '').split('\n')[0].slice(0, 140);
       console.log(formatWarn(
-        `[retry] ${event.attempt}/${event.totalAttempts}` +
-        (detail ? `, reason: ${detail}` : '')
+        `  ↻  RETRY  ${event.attempt}/${event.totalAttempts}` +
+        (detail ? `\n     ${detail}` : '')
       ));
       break;
     }

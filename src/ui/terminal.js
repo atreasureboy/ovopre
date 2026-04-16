@@ -1,26 +1,27 @@
 import path from 'node:path';
 
-// ─── ANSI palette ────────────────────────────────────────────────────────────
+// ─── ANSI palette ─────────────────────────────────────────────────────────────
+// Uses 256-color codes for consistent rendering across terminals.
 const C = {
-  reset:         '\x1b[0m',
-  bold:          '\x1b[1m',
-  dim:           '\x1b[2m',
-  cyan:          '\x1b[36m',
-  brightCyan:    '\x1b[96m',
-  blue:          '\x1b[34m',
-  brightBlue:    '\x1b[94m',
-  green:         '\x1b[32m',
-  brightGreen:   '\x1b[92m',
-  yellow:        '\x1b[33m',
-  brightYellow:  '\x1b[93m',
-  red:           '\x1b[31m',
-  magenta:       '\x1b[35m',
-  brightMagenta: '\x1b[95m',
-  brightBlack:   '\x1b[90m',   // dark gray / muted
+  reset:        '\x1b[0m',
+  bold:         '\x1b[1m',
+  dim:          '\x1b[2m',
+  // ── purple / teal / amber palette ──
+  neonPink:     '\x1b[38;5;141m',  // soft lavender-purple  — logo top / primary accent
+  neonCyan:     '\x1b[38;5;80m',   // steel teal            — logo mid / borders / labels
+  neonYellow:   '\x1b[38;5;214m',  // warm amber            — logo base / prompt arrow
+  neonGreen:    '\x1b[38;5;114m',  // sage green            — success / tool ok
+  neonRed:      '\x1b[38;5;204m',  // rose-coral            — errors
+  neonBlue:     '\x1b[38;5;105m',  // medium purple         — accents
+  dimGray:      '\x1b[38;5;240m',  // dark gray             — box-drawing / decorative only
+  text:         '\x1b[38;5;252m',  // near-white            — readable info text / labels
+  // ── aliases kept for internal use ──
+  brightBlack:  '\x1b[38;5;240m',
+  green:        '\x1b[38;5;114m',
+  yellow:       '\x1b[38;5;214m',
 };
 
-// ─── OVOPRE ASCII logo (block style, 6 lines × ~52 cols) ─────────────────────
-
+// ─── OVOPRE ASCII logo ─────────────────────────────────────────────────────────
 const LOGO = [
   ' ██████╗ ██╗   ██╗ ██████╗ ██████╗ ██████╗ ███████╗',
   '██╔═══██╗██║   ██║██╔═══██╗██╔══██╗██╔══██╗██╔════╝',
@@ -30,18 +31,17 @@ const LOGO = [
   ' ╚═════╝    ╚═╝    ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚══════╝',
 ];
 
-// Top-to-bottom gradient: bright cyan → cyan → blue → shadow
+// Cyberpunk gradient: hot pink → neon cyan → neon yellow → shadow
 const LOGO_COLORS = [
-  C.brightCyan + C.bold,
-  C.brightCyan,
-  C.cyan,
-  C.cyan,
-  C.blue,
-  C.brightBlack,
+  C.neonPink + C.bold,
+  C.neonPink,
+  C.neonCyan,
+  C.neonCyan,
+  C.neonYellow,
+  C.dimGray,
 ];
 
-// ─── TTY helpers ─────────────────────────────────────────────────────────────
-
+// ─── TTY helpers ──────────────────────────────────────────────────────────────
 export function hasColor(stream = process.stdout) {
   return !!(stream && stream.isTTY);
 }
@@ -55,54 +55,94 @@ export function renderBanner({ model, cwd, stream = process.stdout }) {
   if (!hasColor(stream)) {
     return [
       '',
-      '  OVOPRE',
-      `  model=${modelTag}  project=${project}`,
-      '  ' + '─'.repeat(52),
+      '  OVOPRE — SYSTEM ONLINE',
+      `  MODEL=${modelTag}  PROJECT=${project}`,
+      '  ' + '═'.repeat(52),
       '  /help  /plan <goal>  /clear  /status  /exit',
     ].join('\n');
   }
 
-  const art = LOGO.map((line, i) => `  ${LOGO_COLORS[i]}${line}${C.reset}`).join('\n');
+  const cols  = stream.columns || 80;
+  const W     = Math.max(52, Math.min(cols - 2, 78)); // banner inner width
 
-  const cols   = stream.columns || 80;
-  const sepLen = Math.max(52, Math.min(cols - 4, 72));
-  const sep    = `  ${C.brightBlack}${'─'.repeat(sepLen)}${C.reset}`;
+  // Helpers for banner lines (all left-anchored, no right border → industrial aesthetic)
+  const line   = (ch = '═') => `  ${C.dimGray}${ch.repeat(W)}${C.reset}`;
+  const top    = `  ${C.dimGray}╔${'═'.repeat(W)}${C.reset}`;
+  const bot    = `  ${C.dimGray}╚${'═'.repeat(W)}${C.reset}`;
+  const div    = (tag) => {
+    const rest = Math.max(0, W - 2 - tag.length);
+    return `  ${C.dimGray}╠══${C.reset}${C.neonCyan}${tag}${C.reset}${C.dimGray}${'═'.repeat(rest)}${C.reset}`;
+  };
+  const row    = (content) => `  ${C.dimGray}║${C.reset}  ${content}`;
 
-  const modelLabel = `${C.green}${C.bold}model${C.reset}`;
-  const projLabel  = `${C.brightBlack}project${C.reset}`;
-  const dot        = `${C.brightBlack}◈${C.reset}`;
-  const infoLine   = `  ${modelLabel} ${dot} ${C.bold}${modelTag}${C.reset}   ${projLabel} ${dot} ${C.brightBlack}${project}${C.reset}`;
-  const hintLine   = `  ${C.brightBlack}/help  /plan <goal>  /clear  /status  /exit${C.reset}`;
+  const art = LOGO.map((l, i) => row(`${LOGO_COLORS[i]}${l}${C.reset}`)).join('\n');
 
-  return ['', art, sep, infoLine, hintLine, sep].join('\n');
+  const modelPart = `${C.neonPink}${C.bold}MODEL${C.reset} ${C.dimGray}▸${C.reset} ${C.bold}${modelTag}${C.reset}`;
+  const projPart  = `${C.dimGray}PROJECT${C.reset} ${C.dimGray}▸${C.reset} ${C.neonCyan}${project}${C.reset}`;
+  const hintPart  = `${C.text}/help  /plan <goal>  /clear  /status  /exit${C.reset}`;
+
+  return [
+    '',
+    top,
+    art,
+    div('[ SYS ]'),
+    row(`${modelPart}   ${projPart}`),
+    div('[ CMD ]'),
+    row(hintPart),
+    bot,
+  ].join('\n');
 }
 
-// ─── Prompt / response markers ───────────────────────────────────────────────
-
-export function promptUser() {
-  if (!hasColor()) return '> ';
-  // │ forms the left wall of the input box drawn by renderInputBox()
-  return `  ${C.brightBlack}│${C.reset}  ${C.brightCyan}${C.bold}❯${C.reset} `;
-}
+// ─── Input box ────────────────────────────────────────────────────────────────
 
 /**
- * Returns the top/bottom borders of the input box, or null when color is off.
- * Width adapts to the terminal but is clamped to [44, 72].
+ * Returns { top, bot } strings for the input box frame, or null in no-color mode.
+ * Uses full-enclosure double-line borders (╔═[ INPUT ]═╗ … ╚═════════╝).
  */
 export function renderInputBox(cols = 80) {
   if (!hasColor()) return null;
-  const width = Math.max(44, Math.min(cols - 4, 72));
-  const dash = '─'.repeat(width);
-  return {
-    top: `  ${C.brightBlack}╭${dash}╮${C.reset}`,
-    bot: `  ${C.brightBlack}╰${dash}╯${C.reset}`,
-  };
+
+  // Total visible width of ╔═...═╗ (includes the 2 leading-space indent)
+  const boxW   = Math.max(46, Math.min(cols - 2, 78));
+  const inner  = boxW - 2;   // chars between ╔ and ╗
+
+  // ╔══[ INPUT ]══...══╗
+  const tag    = '[ INPUT ]';                              // 9 visible chars
+  const lFill  = Math.floor((inner - tag.length) / 2);
+  const rFill  = inner - tag.length - lFill;
+
+  const top = (
+    `  ${C.dimGray}╔${'═'.repeat(lFill)}${C.reset}` +
+    `${C.neonYellow}${C.bold}${tag}${C.reset}` +
+    `${C.dimGray}${'═'.repeat(rFill)}╗${C.reset}`
+  );
+  const bot = `  ${C.dimGray}╚${'═'.repeat(inner)}╝${C.reset}`;
+
+  return { top, bot };
 }
 
-/** Printed before the first streaming token of an assistant response. */
+// ─── Prompt ───────────────────────────────────────────────────────────────────
+
+export function promptUser() {
+  if (!hasColor()) return '> ';
+  // ║ aligns with ╔/╚ in renderInputBox (same column position)
+  return `  ${C.dimGray}║${C.reset}  ${C.neonYellow}${C.bold}▶${C.reset} `;
+}
+
+// ─── Assistant / output headers ──────────────────────────────────────────────
+
+/** Printed before the first streaming token (or before a buffered response). */
 export function formatAssistantHeader() {
   if (!hasColor()) return '\n';
-  return `\n  ${C.brightBlack}◈ assistant${C.reset}\n`;
+  const cols  = process.stdout.columns || 80;
+  const W     = Math.max(40, Math.min(cols - 2, 78));
+  const tag   = '[ SYS:OUTPUT ]';                         // 14 visible chars
+  const rest  = Math.max(0, W - 2 - tag.length);
+  return (
+    `\n  ${C.dimGray}╔══${C.reset}` +
+    `${C.neonCyan}${C.bold}${tag}${C.reset}` +
+    `${C.dimGray}${'═'.repeat(rest)}${C.reset}\n`
+  );
 }
 
 export function formatAssistant(text) {
@@ -112,15 +152,15 @@ export function formatAssistant(text) {
 // ─── Informational / status text ─────────────────────────────────────────────
 
 export function formatInfo(text) {
-  return hasColor() ? `${C.brightBlack}${text}${C.reset}` : text;
+  return hasColor() ? `${C.text}${text}${C.reset}` : text;
 }
 
 export function formatSuccess(text) {
-  return hasColor() ? `${C.brightGreen}${text}${C.reset}` : text;
+  return hasColor() ? `${C.neonGreen}${text}${C.reset}` : text;
 }
 
 export function formatWarn(text) {
-  return hasColor() ? `${C.yellow}${text}${C.reset}` : text;
+  return hasColor() ? `${C.neonYellow}${text}${C.reset}` : text;
 }
 
 // ─── Status bar (verbose mode only) ──────────────────────────────────────────
@@ -136,72 +176,65 @@ export function estimateCostFromUsage(usage) {
 
 export function formatStatusBar({ phase, model, usage, toolCalls = 0, round = null }) {
   const totalTokens = Number(usage?.total_tokens || 0);
-  const cost = estimateCostFromUsage(usage);
+  const cost  = estimateCostFromUsage(usage);
   const parts = [`${phase || 'idle'}`, `${model || '?'}`, `${totalTokens}t`];
-  if (toolCalls > 0) parts.push(`${toolCalls} tools`);
-  if (cost !== null) parts.push(`$${cost.toFixed(4)}`);
-  if (round) parts.push(`r${round}`);
+  if (toolCalls > 0) parts.push(`${toolCalls} calls`);
+  if (cost !== null)  parts.push(`$${cost.toFixed(4)}`);
+  if (round)          parts.push(`r${round}`);
   const text = parts.join('  ');
-  return hasColor() ? `${C.brightBlack}  ${text}${C.reset}` : `  ${text}`;
+  return hasColor()
+    ? `  ${C.text}[ ${text} ]${C.reset}`
+    : `  [ ${text} ]`;
 }
 
 // ─── Tool display ─────────────────────────────────────────────────────────────
 
 /**
- * Single-line tool call display (default mode).
- *
- *   ⏺ read_file(README.md)  3ms
- *   ⏺ bash(npm test)  1.2s
- *   ⏺ write_file(readme1.md)  45ms  ✗
+ * Single-line tool call.
+ *   ▶ read_file(README.md)  3ms
+ *   ✗ bash(npm test)  1.2s  [ERR]
  */
 export function formatToolLine(name, ok, durationMs, arg = '') {
-  const argStr = arg ? `(${arg})` : '';
   const ms     = fmtDuration(durationMs);
+  const argStr = arg ? `(${arg})` : '';
 
   if (!hasColor()) {
-    return `  ${ok ? '●' : '○'} ${name}${argStr}${ms ? '  ' + ms : ''}${ok ? '' : '  err'}`;
+    return `  ${ok ? '▶' : '✗'} ${name}${argStr}${ms ? '  ' + ms : ''}${ok ? '' : '  [ERR]'}`;
   }
 
-  const bullet = ok ? `${C.green}⏺${C.reset}` : `${C.yellow}⏺${C.reset}`;
+  const bullet = ok ? `${C.neonGreen}▶${C.reset}` : `${C.neonRed}✗${C.reset}`;
   const label  = `${C.bold}${name}${C.reset}`;
-  const argTxt = arg ? `${C.brightBlack}(${arg})${C.reset}` : '';
-  const timing = ms  ? `${C.brightBlack}  ${ms}${C.reset}` : '';
-  const err    = ok  ? '' : `  ${C.yellow}✗${C.reset}`;
+  const argTxt = arg ? `${C.text}(${arg})${C.reset}` : '';
+  const timing = ms  ? `${C.text}  ${ms}${C.reset}` : '';
+  const err    = ok  ? '' : `  ${C.neonRed}[ERR]${C.reset}`;
 
   return `  ${bullet} ${label}${argTxt}${timing}${err}`;
 }
 
-/**
- * Verbose-mode tool-start line.
- *   ⏺ read_file  #1  …
- */
+/** Verbose-mode tool-start: ▷ read_file  #1  … */
 export function formatToolStart(name, index) {
-  if (!hasColor()) return `  ● ${name}  #${index}  …`;
-  return `  ${C.brightBlack}⏺${C.reset} ${C.bold}${name}${C.reset}${C.brightBlack}  #${index}  …${C.reset}`;
+  if (!hasColor()) return `  ▷ ${name}  #${index}  …`;
+  return (
+    `  ${C.text}▷${C.reset} ${C.neonCyan}${name}${C.reset}` +
+    `${C.text}  #${index}  …${C.reset}`
+  );
 }
 
-/**
- * Verbose-mode tool-end line.
- *   ✓ read_file  (12ms)  → first 120 chars of output…
- */
+/** Verbose-mode tool-end: ✓ read_file  12ms  → preview… */
 export function formatToolEnd(name, ok, durationMs, details = null) {
   const ms      = fmtDuration(durationMs);
   const preview = buildPreview(details);
   if (!hasColor()) {
     return `  ${ok ? '✓' : '✗'} ${name}${ms ? '  ' + ms : ''}${preview ? '  → ' + preview : ''}`;
   }
-  const tick   = ok ? `${C.green}✓${C.reset}` : `${C.yellow}✗${C.reset}`;
-  const timing = ms      ? `${C.brightBlack}  ${ms}${C.reset}`        : '';
-  const prev   = preview ? `${C.brightBlack}  → ${preview}${C.reset}` : '';
-  return `    ${tick} ${C.brightBlack}${name}${C.reset}${timing}${prev}`;
+  const tick    = ok ? `${C.neonGreen}✓${C.reset}` : `${C.neonRed}✗${C.reset}`;
+  const timing  = ms      ? `${C.text}  ${ms}${C.reset}`        : '';
+  const prev    = preview ? `${C.text}  → ${preview}${C.reset}` : '';
+  return `    ${tick} ${C.text}${name}${C.reset}${timing}${prev}`;
 }
 
 // ─── Tool arg extraction ──────────────────────────────────────────────────────
 
-/**
- * Extract the most meaningful argument from a tool call to show inline:
- *   ⏺ read_file(README.md)  32ms
- */
 export function extractPrimaryArg(name, args) {
   if (!args || typeof args !== 'object') return '';
   const candidates = [
@@ -222,6 +255,98 @@ export function extractPrimaryArg(name, args) {
     }
   }
   return '';
+}
+
+// ─── Spinner ──────────────────────────────────────────────────────────────────
+
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const SPINNER_COLORS = [C.neonPink, C.neonCyan, C.neonYellow, C.neonCyan];
+const SPINNER_DOTS   = ['   ', '.  ', '.. ', '...'];
+
+/**
+ * Create a spinner instance.
+ *   spinner.start('THINKING')
+ *   spinner.update('EXECUTING')
+ *   spinner.stop()
+ * No-op in non-color / non-TTY mode.
+ */
+export function createSpinner(defaultLabel = 'PROCESSING') {
+  if (!hasColor()) {
+    return { start: () => {}, update: () => {}, stop: () => {} };
+  }
+
+  let tick = 0, timer = null, active = false, currentLabel = defaultLabel;
+
+  function render() {
+    const frame = SPINNER_FRAMES[tick % SPINNER_FRAMES.length];
+    const color = SPINNER_COLORS[tick % SPINNER_COLORS.length];
+    const dots  = SPINNER_DOTS[Math.floor(tick / 3) % SPINNER_DOTS.length];
+    process.stdout.write(
+      `\r  ${color}${frame}${C.reset}  ` +
+      `${C.text}⟨ SYS ⟩${C.reset} ` +
+      `${C.neonCyan}${currentLabel}${C.reset}` +
+      `${C.text}${dots}${C.reset}  `
+    );
+    tick++;
+  }
+
+  return {
+    start(label = defaultLabel) {
+      currentLabel = label;
+      if (active) return;
+      active = true;
+      render();
+      timer = setInterval(render, 80);
+    },
+    update(label) {
+      currentLabel = label;
+    },
+    stop() {
+      if (!active) return;
+      active = false;
+      if (timer) { clearInterval(timer); timer = null; }
+      process.stdout.write('\r\x1b[2K');
+    },
+  };
+}
+
+// ─── Section divider ──────────────────────────────────────────────────────────
+
+/**
+ * A thin separator line: ──[ LABEL ]── in dimGray.
+ * Falls back to a plain dashed line in no-color mode.
+ */
+export function formatDivider(label = '') {
+  if (!hasColor()) return label ? `--- ${label} ---` : '─────────────────────';
+  const cols = process.stdout.columns || 80;
+  const W    = Math.max(40, Math.min(cols - 2, 78));
+  if (!label) return `  ${C.dimGray}${'─'.repeat(W)}${C.reset}`;
+  const tag  = `[ ${label} ]`;
+  const fill = Math.max(0, W - 4 - tag.length);
+  return `  ${C.dimGray}──${C.reset}${C.dimGray}${tag}${'─'.repeat(fill)}${C.reset}`;
+}
+
+// ─── Session info line ────────────────────────────────────────────────────────
+
+/**
+ * Styled one-liner shown after the banner:
+ *   ◈ session=default  ◈ tools=on  ◈ https://api.openai.com
+ */
+export function formatSessionLine(sessionId, toolsOn, baseURL) {
+  const dot = hasColor() ? `${C.neonPink}◈${C.reset}` : '◈';
+  const kv  = (k, v) => hasColor()
+    ? `${dot} ${C.text}${k}=${C.reset}${C.neonCyan}${v}${C.reset}`
+    : `${dot} ${k}=${v}`;
+
+  const toolTag = toolsOn
+    ? (hasColor() ? `${dot} ${C.text}tools=${C.reset}${C.neonGreen}on${C.reset}` : `${dot} tools=on`)
+    : (hasColor() ? `${dot} ${C.text}tools=${C.reset}${C.neonRed}off${C.reset}` : `${dot} tools=off`);
+
+  const urlPart = hasColor()
+    ? `${dot} ${C.text}${String(baseURL || '').replace(/\/$/, '')}${C.reset}`
+    : `${dot} ${baseURL || ''}`;
+
+  return `  ${kv('session', sessionId || 'default')}   ${toolTag}   ${urlPart}`;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
