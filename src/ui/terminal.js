@@ -2,20 +2,43 @@ import path from 'node:path';
 
 // ─── ANSI palette ────────────────────────────────────────────────────────────
 const C = {
-  reset:        '\x1b[0m',
-  bold:         '\x1b[1m',
-  dim:          '\x1b[2m',
-  cyan:         '\x1b[36m',
-  brightCyan:   '\x1b[96m',
-  blue:         '\x1b[34m',
-  brightBlue:   '\x1b[94m',
-  green:        '\x1b[32m',
-  brightGreen:  '\x1b[92m',
-  yellow:       '\x1b[33m',
-  brightYellow: '\x1b[93m',
-  red:          '\x1b[31m',
-  brightBlack:  '\x1b[90m',   // "dark gray" / muted
+  reset:         '\x1b[0m',
+  bold:          '\x1b[1m',
+  dim:           '\x1b[2m',
+  cyan:          '\x1b[36m',
+  brightCyan:    '\x1b[96m',
+  blue:          '\x1b[34m',
+  brightBlue:    '\x1b[94m',
+  green:         '\x1b[32m',
+  brightGreen:   '\x1b[92m',
+  yellow:        '\x1b[33m',
+  brightYellow:  '\x1b[93m',
+  red:           '\x1b[31m',
+  magenta:       '\x1b[35m',
+  brightMagenta: '\x1b[95m',
+  brightBlack:   '\x1b[90m',   // dark gray / muted
 };
+
+// ─── OVOPRE ASCII logo (block style, 6 lines × ~52 cols) ─────────────────────
+
+const LOGO = [
+  ' ██████╗ ██╗   ██╗ ██████╗ ██████╗ ██████╗ ███████╗',
+  '██╔═══██╗██║   ██║██╔═══██╗██╔══██╗██╔══██╗██╔════╝',
+  '██║   ██║╚██╗ ██╔╝██║   ██║██████╔╝██████╔╝█████╗  ',
+  '██║   ██║ ╚████╔╝ ██║   ██║██╔═══╝ ██╔══██╗██╔══╝  ',
+  '╚██████╔╝  ╚██╔╝  ╚██████╔╝██║     ██║  ██║███████╗',
+  ' ╚═════╝    ╚═╝    ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚══════╝',
+];
+
+// Top-to-bottom gradient: bright cyan → cyan → blue → shadow
+const LOGO_COLORS = [
+  C.brightCyan + C.bold,
+  C.brightCyan,
+  C.cyan,
+  C.cyan,
+  C.blue,
+  C.brightBlack,
+];
 
 // ─── TTY helpers ─────────────────────────────────────────────────────────────
 
@@ -23,47 +46,66 @@ export function hasColor(stream = process.stdout) {
   return !!(stream && stream.isTTY);
 }
 
-function c(text, ...codes) {
-  // apply ANSI codes only when stdout is a TTY
-  if (!hasColor()) return text;
-  return codes.join('') + text + C.reset;
-}
-
 // ─── Banner ───────────────────────────────────────────────────────────────────
 
 export function renderBanner({ model, cwd, stream = process.stdout }) {
-  const cols  = stream.columns || 80;
-  const width = Math.max(40, Math.min(cols - 2, 72));
   const project  = path.basename(cwd || process.cwd());
-  const modelTag = (model || 'unknown');
+  const modelTag = model || 'unknown';
 
   if (!hasColor(stream)) {
     return [
       '',
-      `  ovopre  ${modelTag}  ${project}`,
-      '  ' + '─'.repeat(width - 2),
+      '  OVOPRE',
+      `  model=${modelTag}  project=${project}`,
+      '  ' + '─'.repeat(52),
+      '  /help  /plan <goal>  /clear  /status  /exit',
     ].join('\n');
   }
 
-  const logo  = `${C.brightCyan}${C.bold}ovopre${C.reset}`;
-  const mod   = `${C.green}${modelTag}${C.reset}`;
-  const proj  = `${C.brightBlack}${project}${C.reset}`;
-  const sep   = `${C.brightBlack}${'─'.repeat(width)}${C.reset}`;
-  const hint  = `${C.brightBlack}  /help  /plan <goal>  /clear  /status  /exit${C.reset}`;
+  const art = LOGO.map((line, i) => `  ${LOGO_COLORS[i]}${line}${C.reset}`).join('\n');
 
-  return ['', `  ${logo}  ${mod}  ${proj}`, `  ${sep}`, hint].join('\n');
+  const cols   = stream.columns || 80;
+  const sepLen = Math.max(52, Math.min(cols - 4, 72));
+  const sep    = `  ${C.brightBlack}${'─'.repeat(sepLen)}${C.reset}`;
+
+  const modelLabel = `${C.green}${C.bold}model${C.reset}`;
+  const projLabel  = `${C.brightBlack}project${C.reset}`;
+  const dot        = `${C.brightBlack}◈${C.reset}`;
+  const infoLine   = `  ${modelLabel} ${dot} ${C.bold}${modelTag}${C.reset}   ${projLabel} ${dot} ${C.brightBlack}${project}${C.reset}`;
+  const hintLine   = `  ${C.brightBlack}/help  /plan <goal>  /clear  /status  /exit${C.reset}`;
+
+  return ['', art, sep, infoLine, hintLine, sep].join('\n');
 }
 
 // ─── Prompt / response markers ───────────────────────────────────────────────
 
 export function promptUser() {
   if (!hasColor()) return '> ';
-  return `${C.brightBlue}${C.bold}>${C.reset} `;
+  // │ forms the left wall of the input box drawn by renderInputBox()
+  return `  ${C.brightBlack}│${C.reset}  ${C.brightCyan}${C.bold}❯${C.reset} `;
 }
 
-/** Used for non-streaming (buffered) responses — adds a subtle label. */
+/**
+ * Returns the top/bottom borders of the input box, or null when color is off.
+ * Width adapts to the terminal but is clamped to [44, 72].
+ */
+export function renderInputBox(cols = 80) {
+  if (!hasColor()) return null;
+  const width = Math.max(44, Math.min(cols - 4, 72));
+  const dash = '─'.repeat(width);
+  return {
+    top: `  ${C.brightBlack}╭${dash}╮${C.reset}`,
+    bot: `  ${C.brightBlack}╰${dash}╯${C.reset}`,
+  };
+}
+
+/** Printed before the first streaming token of an assistant response. */
+export function formatAssistantHeader() {
+  if (!hasColor()) return '\n';
+  return `\n  ${C.brightBlack}◈ assistant${C.reset}\n`;
+}
+
 export function formatAssistant(text) {
-  if (!hasColor()) return text || '';
   return text || '';
 }
 
@@ -95,11 +137,7 @@ export function estimateCostFromUsage(usage) {
 export function formatStatusBar({ phase, model, usage, toolCalls = 0, round = null }) {
   const totalTokens = Number(usage?.total_tokens || 0);
   const cost = estimateCostFromUsage(usage);
-  const parts = [
-    `${phase || 'idle'}`,
-    `${model || '?'}`,
-    `${totalTokens}t`,
-  ];
+  const parts = [`${phase || 'idle'}`, `${model || '?'}`, `${totalTokens}t`];
   if (toolCalls > 0) parts.push(`${toolCalls} tools`);
   if (cost !== null) parts.push(`$${cost.toFixed(4)}`);
   if (round) parts.push(`r${round}`);
@@ -115,11 +153,6 @@ export function formatStatusBar({ phase, model, usage, toolCalls = 0, round = nu
  *   ⏺ read_file(README.md)  3ms
  *   ⏺ bash(npm test)  1.2s
  *   ⏺ write_file(readme1.md)  45ms  ✗
- *
- * @param {string}  name        tool name
- * @param {boolean} ok          success?
- * @param {number}  durationMs  execution time
- * @param {string}  [arg]       primary argument (already shortened)
  */
 export function formatToolLine(name, ok, durationMs, arg = '') {
   const argStr = arg ? `(${arg})` : '';
@@ -129,9 +162,7 @@ export function formatToolLine(name, ok, durationMs, arg = '') {
     return `  ${ok ? '●' : '○'} ${name}${argStr}${ms ? '  ' + ms : ''}${ok ? '' : '  err'}`;
   }
 
-  const bullet = ok
-    ? `${C.green}⏺${C.reset}`
-    : `${C.yellow}⏺${C.reset}`;
+  const bullet = ok ? `${C.green}⏺${C.reset}` : `${C.yellow}⏺${C.reset}`;
   const label  = `${C.bold}${name}${C.reset}`;
   const argTxt = arg ? `${C.brightBlack}(${arg})${C.reset}` : '';
   const timing = ms  ? `${C.brightBlack}  ${ms}${C.reset}` : '';
@@ -159,9 +190,9 @@ export function formatToolEnd(name, ok, durationMs, details = null) {
   if (!hasColor()) {
     return `  ${ok ? '✓' : '✗'} ${name}${ms ? '  ' + ms : ''}${preview ? '  → ' + preview : ''}`;
   }
-  const tick    = ok ? `${C.green}✓${C.reset}` : `${C.yellow}✗${C.reset}`;
-  const timing  = ms      ? `${C.brightBlack}  ${ms}${C.reset}`              : '';
-  const prev    = preview ? `${C.brightBlack}  → ${preview}${C.reset}`       : '';
+  const tick   = ok ? `${C.green}✓${C.reset}` : `${C.yellow}✗${C.reset}`;
+  const timing = ms      ? `${C.brightBlack}  ${ms}${C.reset}`        : '';
+  const prev   = preview ? `${C.brightBlack}  → ${preview}${C.reset}` : '';
   return `    ${tick} ${C.brightBlack}${name}${C.reset}${timing}${prev}`;
 }
 

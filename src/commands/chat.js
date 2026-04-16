@@ -20,6 +20,7 @@ import { runTasksCommand } from './tasks.js';
 import {
   extractPrimaryArg,
   formatAssistant,
+  formatAssistantHeader,
   formatInfo,
   formatStatusBar,
   formatSuccess,
@@ -29,6 +30,7 @@ import {
   formatWarn,
   promptUser,
   renderBanner,
+  renderInputBox,
 } from '../ui/terminal.js';
 
 // ─── Public commands ──────────────────────────────────────────────────────────
@@ -119,6 +121,9 @@ export async function runInteractiveChat(options = {}) {
       }
 
       messages.push({ role: 'user', content: line });
+      // Close the input box now that readline has fully surrendered stdout
+      const inputBox = renderInputBox(process.stdout.columns);
+      if (inputBox) process.stdout.write(`${inputBox.bot}\n`);
       try {
         await runTurnAndUpdateHistory(messages, config, options, sessionId);
       } catch (err) {
@@ -160,7 +165,7 @@ async function runAgentTurn(messages, config, options, { isTerminal, verboseUi }
     cwd: options.cwd,
     maxToolRounds: options.maxToolRounds,
     onToken: isTerminal ? (token) => {
-      if (!streamStarted) { process.stdout.write('\n'); streamStarted = true; }
+      if (!streamStarted) { process.stdout.write(formatAssistantHeader()); streamStarted = true; }
       process.stdout.write(token);
     } : undefined,
     onRoundStart: (round) => {
@@ -206,6 +211,8 @@ async function runAgentTurn(messages, config, options, { isTerminal, verboseUi }
 /** Read one trimmed line; returns null on EOF/close. */
 async function readLine(rl) {
   try {
+    const box = renderInputBox(process.stdout.columns);
+    process.stdout.write(box ? `\n${box.top}\n` : '\n');
     return normalizeChatInput(await rl.question(promptUser()));
   } catch (err) {
     if (String(err.message).toLowerCase().includes('readline was closed')) return null;
@@ -297,6 +304,7 @@ async function runTurnAndUpdateHistory(messages, config, options, sessionId) {
   });
 
   if (!hadStreamOutput && result.text) {
+    process.stdout.write(formatAssistantHeader());
     console.log(result.text.trim());
   }
 
